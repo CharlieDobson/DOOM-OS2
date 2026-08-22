@@ -522,7 +522,9 @@ void M_ReadSaveStrings(void)
 	else
 	    sprintf(name,SAVEGAMENAME"%d.dsg",i);
 
-	handle = open (name, O_RDONLY | 0, 0666);
+	// O_BINARY: the savegame header is raw bytes, not text.  On OS/2 a
+	// text-mode read would eat CRs and stop at the first 0x1a.
+	handle = open (name, O_RDONLY | O_BINARY, 0666);
 	if (handle == -1)
 	{
 	    strcpy(&savegamestrings[i][0],EMPTYSTRING);

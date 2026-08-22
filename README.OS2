@@ -1,0 +1,244 @@
+DOOM for OS/2
+=============
+
+A port of the released DOOM source to OS/2 2.x and Warp, built with Open
+Watcom 1.9.  The engine is id's, unchanged apart from the handful of places
+listed under "Changes to the engine" below; everything OS/2 about it lives in
+the five platform modules.
+
+Requires a real DOOM WAD, as every build of DOOM does.
+
+
+Building
+--------
+
+    OS2\BUILD\MKOS2.CMD
+
+This is a *cross build*.  It runs on a Windows machine with Open Watcom 1.9
+installed -- Watcom's NT-hosted compiler emits OS/2 LX objects -- and produces
+BUILD\DOOM.EXE for OS/2.  The result cannot be run on the machine that built
+it.  Set %WATCOM% if Open Watcom is not at C:\WATCOM.
+
+Object files stay in BUILD\, out of the source tree.
+
+The build has been verified to compile and link clean.  It has *not* been run
+on OS/2; see "What has not been tested" at the end.
+
+
+Running
+-------
+
+Put DOOM.EXE next to a WAD, or point DOOMWADDIR at one:
+
+    SET DOOMWADDIR=D:\GAMES\DOOM
+    DOOM
+
+Run it from an OS/2 window, not a full screen session -- see "Why it is a VIO
+program" below.  The configuration is written to DEFAULT.CFG beside the WADs.
+
+Command line options, beyond the ones every DOOM has:
+
+    -2, -3          Open the window at two or three times 320x200.  The
+                    window can be resized freely afterwards regardless; the
+                    blitter scales to whatever size it is.
+    -nodive         Skip DIVE and use the GPI fallback.  Useful for telling
+                    the two apart when something looks wrong.
+    -nograbmouse    Leave the mouse pointer alone.  Without this the pointer
+                    is captured and hidden whenever the window is active.
+    -nosound        Do not open the audio device at all.
+    -mb <n>         Zone heap size in megabytes.  Default 6.  DOS DOOM had
+                    this; the Linux build did not.
+
+
+How it works
+------------
+
+**Video.**  Two paths, chosen at startup and reported on the console.
+
+  DIVE (Direct Interface Video Extensions) is the fast one.  DOOM's 320x200
+  8-bit frame buffer is handed to DIVE, which blits it to the visible part of
+  the window with the display driver doing the scaling and colour conversion.
+  This is as close to the hardware as a PM program is allowed to get.
+
+  GpiDrawBits is the fallback, and works on a plain OS/2 2.0 with no
+  multimedia installed.  It goes through the whole graphics engine every
+  frame, so it is slower, but it is correct.
+
+  DIVE.DLL is loaded by name at run time rather than imported, precisely so
+  that a machine without it still runs the game.
+
+  DOOM draws straight into the buffer the blitter reads -- I_InitGraphics
+  points screens[0] at it -- so there is no copy between the renderer and the
+  screen.  The X11 original did the same thing with the XImage's data.
+
+**Sound.**  MMPM/2 DART, at 11025 Hz 16-bit stereo, which is what DOOM's
+  mixer produces.
+
+  The mixing itself is id's, untouched.  What changed is who calls it.  On
+  Linux the game loop mixed a buffer per rendered frame and wrote it to
+  /dev/dsp; that only worked because the write blocked when the driver's
+  buffer filled, and that blocking is what held the frame rate down to
+  whatever the sound card was draining at.  Under DART, MMPM/2 calls back on
+  a thread of its own each time a buffer has played, and the mixing happens
+  there -- at exactly the rate the hardware consumes it, with the game loop
+  left alone.  I_UpdateSound and I_SubmitSound are consequently empty.
+
+  That second thread is the reason every module is compiled -bm.  The channel
+  table that the callback reads and I_StartSound writes is held under a mutex
+  semaphore.
+
+  There is still no music.  The Linux original had none either.
+
+  MDM.DLL is loaded by name, like DIVE.  No sound card, no MMPM/2, or another
+  program holding the device: DOOM says so and plays silently.
+
+**Networking.**  IBM TCP/IP, over the same UDP packets and the same port
+  (5029) as every other DOOM, so this can play against linuxxdoom.
+
+  Three things differ from Berkeley sockets and all three bite: sock_init()
+  has to be called before anything works, soclose() closes a socket where
+  close() does not, and errno says nothing -- sock_errno() does.
+
+  SO32DLL and TCP32DLL are loaded by name, and only when -net is actually
+  used.  A single player game on a machine with no TCP/IP never notices.
+
+**No hard dependencies.**  The upshot of all that name-loading is that
+DOOM.EXE imports nothing but the base system:
+
+    DOSCALLS  NLS  KBDCALLS  VIOCALLS  PMWIN  PMGPI
+
+It loads and plays on a bare OS/2 2.0, and picks up DIVE, sound and
+networking on any machine that has them.
+
+  One trap worth recording, since it is invisible until you look: calling
+  htons() or htonl() would have put an import on TCPIP32.DLL into the
+  executable and undone the whole arrangement.  They are real functions in
+  OS/2's library, not macros.  I_NET.C defines its own, which is what the
+  Linux original did too -- "for some odd reason", as its comment has it.
+
+
+Why it is a VIO program
+-----------------------
+
+DOOM.EXE is linked "sys os2v2" -- a text-mode program -- and turns *itself*
+into a Presentation Manager program when it opens its window, by changing its
+own process type in its process information block.  I_OS2_MorphToPM does it.
+
+This is a documented OS/2 facility and it exists for exactly this case.  A
+program linked as PM from the start has nowhere to put text, and DOOM has a
+great deal to say before its window opens: the whole "W_Init: Init WADfiles"
+banner, and more to the point the message when a WAD cannot be found.
+Morphing keeps that text in the OS/2 window the game was launched from and
+still gets a PM window a moment later.
+
+It does mean starting DOOM from an OS/2 *window*, not a full screen session.
+If that is a problem, change one word in MKOS2.CMD -- "sys os2v2_pm" instead
+of "sys os2v2" -- and it builds as a pure PM application with no source
+change at all.  Everything printed before the window opens is then lost,
+which is why I_Error also puts its message in a message box.
+
+
+Changes to the engine
+---------------------
+
+The engine sources here are id's, and the diff against linuxdoom-1.10 is
+deliberately small.  In full:
+
+  d_main.c    An __OS2__ branch alongside the NORMALUNIX one for the WAD
+              search paths.  Same DOOMWADDIR behaviour; what changes is that
+              there is no $HOME to insist on -- OS/2 has no per-user home
+              directory that is guaranteed to exist, and refusing to start
+              without one would stop the game on an ordinary Warp desktop.
+              The configuration goes in DEFAULT.CFG beside the WADs.
+
+              <direct.h> for mkdir, and the -cdrom call given the one
+              argument OS/2's mkdir takes.
+
+  w_wad.c     The unconditional "#define O_BINARY 0" is now guarded.  OS/2
+              has a real text/binary distinction and <fcntl.h> already
+              defines O_BINARY properly; flattening it to zero would stop
+              every WAD read at the first 0x1a byte.
+
+              strupr and filelength are no longer defined on OS/2 -- Watcom's
+              run-time library has both, with different return types, and
+              redefining them is a hard error.
+
+  m_menu.c    O_BINARY on the savegame header read, for the same reason.
+
+  m_bbox.h    <values.h> is a Unix header.  doomtype.h already defines MAXINT
+              and MININT for every platform that is not Linux.
+
+  r_data.c    alloca is declared in <malloc.h> on OS/2, not <alloca.h>.
+              Without the prototype every stack buffer in that file arrives
+              as a truncated pointer.
+
+  doomdef.h   SNDSERV off.  There is no separate sound server process to
+              fork and exec; the sound is integrated.
+
+  i_main.c, i_system.c, i_video.c, i_sound.c, i_net.c
+              Replaced entirely.  These are the port.
+
+  os2doom.h   New: the PM handles and the two services -- morphing, and an
+              error box -- that more than one platform module needs.
+
+Everything else is byte-identical to the release.
+
+
+What has not been tested
+------------------------
+
+The port compiles and links clean, and the executable has been verified to be
+a proper LX binary for the 80386 under OS/2, flagged windowable-VIO, with the
+import list above.  Nothing has been run: there is no OS/2 machine here.
+
+The things most likely to want attention on first run, in the order I would
+check them:
+
+  1. The DIVE image orientation.  SETUP_BLITTER's fInvert is FALSE, which
+     says the source is stored top-down -- which is how DOOM has always held
+     its frame buffer.  If the picture comes out upside down on some display
+     driver, that flag is the one to turn over.  It is commented in
+     I_VIDEO.C.
+
+  2. The keyboard.  Keys are read from PM's scan codes, because those are the
+     only thing that reports shift, control and alt going up as well as down
+     -- and DOOM uses all three.  The arrow keys and the grey navigation
+     block send an 0xe0 prefix on the wire, and how much of that survives
+     into WM_CHAR's scan code byte has varied between OS/2 keyboard drivers.
+     I_TranslateKey falls back to the virtual key and then the character
+     code, so it should cope either way, but this is the part most worth
+     watching.
+
+  3. DART buffer sizes.  MMPM/2 is free to hand back a different buffer size
+     from the one asked for.  The callback fills whole mixes and reports how
+     much it wrote, and refuses to start if the buffer is too small to hold
+     even one -- but the size it actually gives is printed at startup, and is
+     worth a glance.
+
+  4. The socket entry point names in SO32DLL and TCP32DLL.  If one is wrong,
+     -net fails at startup with a clear message and single player is
+     unaffected.
+
+
+Adding an icon
+--------------
+
+There is none.  The window gets the default program icon.
+
+To add one, put a genuine OS/2 icon -- saved by OS/2's own ICONEDIT, or taken
+from \OS2\BITMAP -- in a resource script, compile it with "wrc -bt=os2 -r",
+and bind it into DOOM.EXE with a second wrc pass, then give the frame
+FCF_ICON in I_InitGraphics.
+
+Do not feed wrc a Windows .ICO for an OS/2 target.  It accepts it, exits 0,
+and embeds it verbatim; PM then rejects it, WinLoadPointer fails, that fails
+FCF_ICON, and that fails the whole WinCreateStdWindow with PM error 0x1034,
+PMERR_INVALID_RESOURCE_FORMAT.
+
+
+Licence
+-------
+
+The DOOM source is Copyright (C) 1993-1996 id Software, Inc., Copyright (c)
+ZeniMax Media Inc., and is licensed under the GNU General Public License 2.0.
+See LICENSE.TXT in the root of this tree.  This port is under the same terms.

@@ -40,6 +40,13 @@ static const char rcsid[] = "$Id: d_main.c,v 1.8 1997/02/03 22:45:09 b1 Exp $";
 #include <fcntl.h>
 #endif
 
+#ifdef __OS2__
+// mkdir lives in <direct.h> on OS/2, not in <sys/stat.h>.  Only the -cdrom
+// option calls it, but without the prototype the compiler assumes it returns
+// int and takes anything, which is how a wrong call gets through silently.
+#include <direct.h>
+#endif
+
 
 #include "doomdef.h"
 #include "doomstat.h"
@@ -572,7 +579,56 @@ void IdentifyVersion (void)
     char*	plutoniawad;
     char*	tntwad;
 
-#ifdef NORMALUNIX
+#ifdef __OS2__
+    // OS/2 build.
+    //
+    // DOOMWADDIR works exactly as it does on Unix; only the configuration
+    // file changes.  Paths here are built with '/', which OS/2's C runtime
+    // and DosOpen accept just as readily as the native separator -- and
+    // which needs no escaping in a C string literal -- so a DOOMWADDIR
+    // written either way resolves.
+    //
+    // There is deliberately no $HOME requirement here.  OS/2 has no per-user
+    // home directory that is guaranteed to exist, and refusing to start
+    // without one -- which is what the Unix branch below does -- would stop
+    // the game on a perfectly ordinary Warp desktop.  The configuration goes
+    // in DEFAULT.CFG beside the WADs, which is what every other DOOM has
+    // called it.
+    char *doomwaddir;
+
+    doomwaddir = getenv("DOOMWADDIR");
+    if (!doomwaddir)
+	doomwaddir = ".";
+
+    // Commercial.
+    doom2wad = malloc(strlen(doomwaddir)+1+9+1);
+    sprintf(doom2wad, "%s/doom2.wad", doomwaddir);
+
+    // Retail.
+    doomuwad = malloc(strlen(doomwaddir)+1+8+1);
+    sprintf(doomuwad, "%s/doomu.wad", doomwaddir);
+
+    // Registered.
+    doomwad = malloc(strlen(doomwaddir)+1+8+1);
+    sprintf(doomwad, "%s/doom.wad", doomwaddir);
+
+    // Shareware.
+    doom1wad = malloc(strlen(doomwaddir)+1+9+1);
+    sprintf(doom1wad, "%s/doom1.wad", doomwaddir);
+
+    // Final DOOM.
+    plutoniawad = malloc(strlen(doomwaddir)+1+12+1);
+    sprintf(plutoniawad, "%s/plutonia.wad", doomwaddir);
+
+    tntwad = malloc(strlen(doomwaddir)+1+9+1);
+    sprintf(tntwad, "%s/tnt.wad", doomwaddir);
+
+    // French stuff.
+    doom2fwad = malloc(strlen(doomwaddir)+1+10+1);
+    sprintf(doom2fwad, "%s/doom2f.wad", doomwaddir);
+
+    sprintf(basedefault, "%s/default.cfg", doomwaddir);
+#elif defined(NORMALUNIX)
     char *home;
     char *doomwaddir;
     doomwaddir = getenv("DOOMWADDIR");
@@ -877,7 +933,13 @@ void D_DoomMain (void)
     if (M_CheckParm("-cdrom"))
     {
 	printf(D_CDROM);
+	// OS/2's mkdir (<direct.h>) takes the path alone -- there is no mode
+	// argument to pass, and the two-argument call below will not compile.
+#ifdef __OS2__
+	mkdir("c:/doomdata");
+#else
 	mkdir("c:\\doomdata",0);
+#endif
 	strcpy (basedefault,"c:/doomdata/default.cfg");
     }	
     

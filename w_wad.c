@@ -35,7 +35,12 @@ rcsid[] = "$Id: w_wad.c,v 1.5 1997/02/03 16:47:57 b1 Exp $";
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <alloca.h>
+/* OS/2 has a real text/binary distinction: <fcntl.h> already defines
+   O_BINARY and it must not be flattened to 0, or every WAD read stops
+   at the first 0x1a and CR/LF pairs collapse. */
+#ifndef O_BINARY
 #define O_BINARY		0
+#endif
 #endif
 
 #include "doomtype.h"
@@ -66,6 +71,12 @@ void**			lumpcache;
 
 #define strcmpi	strcasecmp
 
+// Open Watcom's run-time library supplies both of these on OS/2 -- strupr in
+// <string.h>, filelength in <io.h> -- and its declarations do not match the
+// ones here: strupr returns the string rather than nothing, and filelength
+// returns a long.  Redefining them is a hard error, not a warning, so the
+// library versions are used instead.  They behave identically.
+#ifndef __OS2__
 void strupr (char* s)
 {
     while (*s) { *s = toupper(*s); s++; }
@@ -80,6 +91,7 @@ int filelength (int handle)
 
     return fileinfo.st_size;
 }
+#endif
 
 
 void

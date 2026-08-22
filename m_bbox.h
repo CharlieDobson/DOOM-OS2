@@ -23,7 +23,14 @@
 #ifndef __M_BBOX__
 #define __M_BBOX__
 
+// <values.h> is a Unix header, and where MAXINT and MININT come from there.
+// OS/2 has no such thing -- but doomtype.h already defines both for every
+// platform that is not Linux, which is exactly what this needs.
+#ifdef LINUX
 #include <values.h>
+#else
+#include "doomtype.h"
+#endif
 
 #include "m_fixed.h"
 

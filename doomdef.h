@@ -81,7 +81,11 @@ typedef enum
 //  and unfinished. Default is synchronous.
 // Experimental asynchronous timer based is
 //  handled by SNDINTR. 
-#define SNDSERV  1
+// OS/2 port: sound is integrated, not a separate "sndserver" process piped
+// to over a fork/exec that OS/2 has no equivalent for.  I_SubmitSound hands
+// the mixed buffer to MMPM/2 DART instead, so both of these stay off and
+// D_DoomLoop calls I_UpdateSound + I_SubmitSound synchronously.
+//#define SNDSERV  1
 //#define SNDINTR  1
 
 

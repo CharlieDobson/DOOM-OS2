@@ -41,8 +41,13 @@ rcsid[] = "$Id: r_data.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 #include "doomstat.h"
 #include "r_sky.h"
 
+// alloca is declared in <alloca.h> on Linux and in <malloc.h> on OS/2.
+// Without the prototype the compiler assumes it returns int, and every
+// buffer taken on the stack below arrives as a truncated pointer.
 #ifdef LINUX
 #include  <alloca.h>
+#else
+#include  <malloc.h>
 #endif
 
 

@@ -27,26 +27,38 @@ rcsid[] = "$Id: i_unix.c,v 1.5 1997/02/03 22:45:10 b1 Exp $";
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include <math.h>
 
-#include <sys/time.h>
-#include <sys/types.h>
+// Presentation Manager handles and the OS/2 base API.
+#include "os2doom.h"
 
-#ifndef LINUX
-#include <sys/filio.h>
-#endif
+// MMPM/2.
+//
+// DART -- Direct Audio Real-Time -- is OS/2's low latency waveform
+// interface.  It hands the program a small ring of buffers and calls back on
+// a thread of its own each time one has finished playing, expecting it to be
+// filled again.
+//
+// That is a better fit for DOOM than what the Linux original did, which was
+// to mix a buffer per rendered frame and write it to /dev/dsp.  The write
+// blocked once the driver's four kilobytes were full, so the sound card
+// ended up dictating the frame rate -- and since each mix is about 46 ms of
+// audio and a frame is meant to be 28, it dictated a slow one.  Here the
+// mixing happens in the callback instead, at exactly the rate the hardware
+// drains it, and the game loop is left alone.
+#define INCL_OS2MM
+#define INCL_MMIOOS2
 
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-
-// Linux voxware output.
-#include <linux/soundcard.h>
-
-// Timer stuff. Experimental.
-#include <time.h>
-#include <signal.h>
+// A name collision worth knowing about.  os2medef.h has "typedef WORD
+// VERSION", and doomdef.h has "enum { VERSION = 110 }" -- the game version
+// that goes into the network protocol and the savegames.  Neither one is a
+// macro, so no amount of undef separates them; the MMPM/2 type is renamed
+// on the way in instead.  Nothing in this port ever refers to it.
+#define VERSION MMPM_VERSION
+#include <os2me.h>
+#undef VERSION
 
 #include "z_zone.h"
 
@@ -102,8 +114,49 @@ static int flag = 0;
 // The actual lengths of all sound effects.
 int 		lengths[NUMSFX];
 
-// The actual output device.
-int	audio_fd;
+//
+// The actual output device: MMPM/2 DART.
+//
+// mciSendCommand lives in MDM.DLL and is loaded by name rather than
+// imported, for the same reason DIVE is in I_VIDEO.C.  A machine with no
+// multimedia support installed has no MDM.DLL, and a DOOM.EXE that imported
+// it would refuse to load at all rather than simply running without sound.
+//
+typedef ULONG (APIENTRY *PFNMCISENDCOMMAND)(USHORT, USHORT, ULONG,
+					    PVOID, USHORT);
+
+static HMODULE			hmodMdm		= NULLHANDLE;
+static PFNMCISENDCOMMAND	pMciSendCommand	= NULL;
+
+// How many buffers DART keeps in flight.  Each one holds whole mixes of
+// SAMPLECOUNT stereo frames -- about 46 ms at 11025 Hz -- so three of them
+// is something over a tenth of a second of slack.  Fewer buffers means less
+// delay between pulling the trigger and hearing it; more means fewer breaks
+// in the sound when the machine is busy.
+#define NUM_DART_BUFFERS	3
+
+// One mix, in bytes: SAMPLECOUNT frames, two channels, two bytes each.
+#define DART_CHUNK		(SAMPLECOUNT*BUFMUL)
+
+static USHORT			mciDeviceID = 0;
+static MCI_MIXSETUP_PARMS	mciMixSetup;
+static MCI_BUFFER_PARMS		mciBufferParms;
+static MCI_MIX_BUFFER		mciBuffers[NUM_DART_BUFFERS];
+
+// The size DART actually gave us, which need not be the size asked for.
+static ULONG			dartBufSize = 0;
+
+static boolean			dartUp	    = false;	// stream is running
+static boolean			dartBuffers = false;	// memory is allocated
+
+// Guards the mixing channel table, which two threads touch: the game thread
+// by way of I_StartSound, and DART's own thread by way of the callback.
+static HMTX			sndMutex = NULLHANDLE;
+
+// The mixer proper, further down this file.  It fills mixbuffer with exactly
+// SAMPLECOUNT stereo frames.  In this port it is driven from DART's thread
+// when a buffer comes free, not from the game loop -- see I_UpdateSound.
+static void I_MixBuffer (void);
 
 // The global mixing buffer.
 // Basically, samples from all active internal channels
@@ -153,26 +206,6 @@ int*		channelrightvol_lookup[NUM_CHANNELS];
 
 
 
-//
-// Safe ioctl, convenience.
-//
-void
-myioctl
-( int	fd,
-  int	command,
-  int*	arg )
-{   
-    int		rc;
-    extern int	errno;
-    
-    rc = ioctl(fd, command, arg);  
-    if (rc < 0)
-    {
-	fprintf(stderr, "ioctl(dsp,%d,arg) failed\n", command);
-	fprintf(stderr, "errno=%d\n", errno);
-	exit(-1);
-    }
-}
 
 
 
@@ -478,26 +511,23 @@ I_StartSound
 
   // UNUSED
   priority = 0;
-  
-#ifdef SNDSERV 
-    if (sndserver)
-    {
-	fprintf(sndserver, "p%2.2x%2.2x%2.2x%2.2x\n", id, pitch, vol, sep);
-	fflush(sndserver);
-    }
-    // warning: control reaches end of non-void function.
-    return id;
-#else
-    // Debug.
-    //fprintf( stderr, "starting sound %d", id );
-    
-    // Returns a handle (not used).
-    id = addsfx( id, vol, steptable[pitch], sep );
 
-    // fprintf( stderr, "/handle is %d\n", id );
-    
-    return id;
-#endif
+  // addsfx writes the channel table that DART's thread is reading, so the
+  // two are kept apart here.  Without it the mixer can pick up a channel
+  // whose sample pointer has been stored but whose end pointer has not, and
+  // walk off the end of the lump -- intermittently, and only when a sound
+  // starts on a busy frame, which is the worst kind of fault to go looking
+  // for later.
+  if (sndMutex != NULLHANDLE)
+      DosRequestMutexSem (sndMutex, SEM_INDEFINITE_WAIT);
+
+  // Returns a handle (not used).
+  id = addsfx( id, vol, steptable[pitch], sep );
+
+  if (sndMutex != NULLHANDLE)
+      DosReleaseMutexSem (sndMutex);
+
+  return id;
 }
 
 
@@ -536,7 +566,11 @@ int I_SoundIsPlaying(int handle)
 //
 // This function currently supports only 16bit.
 //
-void I_UpdateSound( void )
+// Renamed from I_UpdateSound for the OS/2 port.  The body below is the
+// original mixer, untouched; what changed is who calls it.  On Linux the
+// game loop did, once per rendered frame.  Here DART's callback does, once
+// per buffer it has finished playing -- see I_DartEvent.
+static void I_MixBuffer( void )
 {
 #ifdef SNDINTR
   // Debug. Count buffer misses with interrupt.
@@ -654,19 +688,32 @@ void I_UpdateSound( void )
 }
 
 
-// 
-// This would be used to write out the mixbuffer
-//  during each game loop update.
-// Updates sound buffer and audio device at runtime. 
-// It is called during Timer interrupt with SNDINTR.
-// Mixing now done synchronous, and
-//  only output be done asynchronous?
 //
+// I_UpdateSound / I_SubmitSound
+//
+// On Linux these were the game loop's way of driving the sound: mix a
+// buffer, then write it to /dev/dsp, once per rendered frame.  It only
+// worked because the write blocked when the driver's buffer was full -- and
+// that blocking is what held the frame rate down to whatever the sound card
+// was draining at.
+//
+// Under DART the flow runs the other way.  MMPM/2 calls I_DartEvent when it
+// has finished with a buffer, and the mixing happens there, on DART's
+// thread, at exactly the rate the hardware consumes it.  The game loop has
+// nothing left to do.
+//
+// They are left here empty rather than deleted: D_DoomLoop still calls both,
+// and removing them would mean changing the engine to suit the platform,
+// which is the wrong way round.
+//
+void
+I_UpdateSound(void)
+{
+}
+
 void
 I_SubmitSound(void)
 {
-  // Write it to DSP device.
-  write(audio_fd, mixbuffer, SAMPLECOUNT*BUFMUL);
 }
 
 
@@ -691,39 +738,56 @@ I_UpdateSoundParams
 
 
 void I_ShutdownSound(void)
-{    
-#ifdef SNDSERV
-  if (sndserver)
-  {
-    // Send a "quit" command.
-    fprintf(sndserver, "q\n");
-    fflush(sndserver);
-  }
-#else
-  // Wait till all pending sounds are finished.
-  int done = 0;
-  int i;
-  
+{
+  MCI_GENERIC_PARMS	gp;
 
-  // FIXME (below).
-  fprintf( stderr, "I_ShutdownSound: NOT finishing pending sounds\n");
-  fflush( stderr );
-  
-  while ( !done )
+  // Reachable twice over: once from I_Quit on the way out, and once from
+  // I_Error if something went wrong before that.  Everything below is
+  // guarded by the flag that says it was set up in the first place.
+  if (!pMciSendCommand)
+      return;
+
+  if (dartUp)
   {
-    for( i=0 ; i<8 && !channels[i] ; i++);
-    
-    // FIXME. No proper channel output.
-    //if (i==8)
-    done=1;
+      // Stop before anything is freed.  MCI_STOP is what brings back the
+      // buffers DART still has in flight, and deallocating them while its
+      // thread is reading one is not a fault that shows up straight away.
+      memset (&gp, 0, sizeof(gp));
+      gp.hwndCallback = NULLHANDLE;
+      pMciSendCommand (mciDeviceID, MCI_STOP, MCI_WAIT, (PVOID)&gp, 0);
+
+      pMciSendCommand (mciDeviceID, MCI_MIXSETUP,
+		       MCI_WAIT | MCI_MIXSETUP_DEINIT,
+		       (PVOID)&mciMixSetup, 0);
+
+      dartUp = false;
   }
-#ifdef SNDINTR
-  I_SoundDelTimer();
-#endif
-  
-  // Cleaning up -releasing the DSP device.
-  close ( audio_fd );
-#endif
+
+  if (dartBuffers)
+  {
+      pMciSendCommand (mciDeviceID, MCI_BUFFER,
+		       MCI_WAIT | MCI_DEALLOCATE_MEMORY,
+		       (PVOID)&mciBufferParms, 0);
+      dartBuffers = false;
+  }
+
+  if (mciDeviceID)
+  {
+      memset (&gp, 0, sizeof(gp));
+      gp.hwndCallback = NULLHANDLE;
+      pMciSendCommand (mciDeviceID, MCI_CLOSE, MCI_WAIT, (PVOID)&gp, 0);
+      mciDeviceID = 0;
+  }
+
+  if (sndMutex != NULLHANDLE)
+  {
+      DosCloseMutexSem (sndMutex);
+      sndMutex = NULLHANDLE;
+  }
+
+  DosFreeModule (hmodMdm);
+  hmodMdm = NULLHANDLE;
+  pMciSendCommand = NULL;
 
   // Done.
   return;
@@ -734,76 +798,200 @@ void I_ShutdownSound(void)
 
 
 
+//
+// I_DartEvent
+//
+// MMPM/2 calls this on a thread of its own every time one of our buffers has
+// finished playing.  Mix the next samples straight into it and hand it back.
+//
+// Two rules govern what may go in here.  It runs at a raised priority, so it
+// has to be short -- the mixing loop is a few thousand multiply-adds and
+// nothing else, no allocation and no file access.  And it runs on a thread
+// the game knows nothing about, so everything it touches that the game also
+// touches goes under sndMutex.
+//
+static LONG APIENTRY
+I_DartEvent
+( ULONG			ulStatus,
+  PMCI_MIX_BUFFER	pBuffer,
+  ULONG			ulFlags )
+{
+  // UNUSED.
+  ulStatus = 0;
+
+  if (ulFlags == MIX_WRITE_COMPLETE && dartUp && pBuffer)
+  {
+      ULONG	done = 0;
+
+      if (sndMutex != NULLHANDLE)
+	  DosRequestMutexSem (sndMutex, SEM_INDEFINITE_WAIT);
+
+      // The mixer produces one fixed-size chunk per call, and DART's buffer
+      // is not obliged to be that size, so fill it a whole chunk at a time.
+      // Anything left over at the end is not played: a partial chunk would
+      // mean throwing away samples the mixer had already stepped past, and
+      // the sound would run fast.
+      while (done + DART_CHUNK <= dartBufSize)
+      {
+	  I_MixBuffer ();
+	  memcpy ((byte *)pBuffer->pBuffer + done, mixbuffer, DART_CHUNK);
+	  done += DART_CHUNK;
+      }
+
+      if (sndMutex != NULLHANDLE)
+	  DosReleaseMutexSem (sndMutex);
+
+      pBuffer->ulBufferLength = done;
+
+      // Straight back into the queue.  This is what keeps the stream alive:
+      // stop returning buffers and the sound simply ends.
+      mciMixSetup.pmixWrite (mciMixSetup.ulMixHandle, pBuffer, 1);
+  }
+
+  return TRUE;
+}
+
+
+//
+// I_InitDart
+//
+// Open the waveaudio device, set the mixer up for what DOOM produces, get
+// the buffers, and start the stream.  Any step may fail -- there may be no
+// sound card, or another program may have the device -- and failing is not
+// fatal: DOOM runs silent.
+//
+static boolean I_InitDart (void)
+{
+  MCI_AMP_OPEN_PARMS	amp;
+  UCHAR			failed[CCHMAXPATH];
+  int			i;
+
+  if (DosLoadModule (failed, sizeof(failed), (PSZ)"MDM", &hmodMdm)
+      != NO_ERROR)
+  {
+      hmodMdm = NULLHANDLE;
+      return false;
+  }
+
+  if (DosQueryProcAddr (hmodMdm, 0, (PSZ)"mciSendCommand",
+			(PFN *)&pMciSendCommand) != NO_ERROR)
+  {
+      DosFreeModule (hmodMdm);
+      hmodMdm = NULLHANDLE;
+      pMciSendCommand = NULL;
+      return false;
+  }
+
+  if (DosCreateMutexSem (NULL, &sndMutex, 0, FALSE) != NO_ERROR)
+      sndMutex = NULLHANDLE;
+
+  //
+  // Open the device, shareable, so that DOOM does not take the sound card
+  // away from everything else on the desktop for as long as it runs.
+  //
+  memset (&amp, 0, sizeof(amp));
+  amp.pszDeviceType = (PSZ) MAKEULONG (MCI_DEVTYPE_WAVEFORM_AUDIO, 0);
+
+  if (pMciSendCommand (0, MCI_OPEN,
+		       MCI_WAIT | MCI_OPEN_TYPE_ID | MCI_OPEN_SHAREABLE,
+		       (PVOID)&amp, 0) != MCIERR_SUCCESS)
+      return false;
+
+  mciDeviceID = amp.usDeviceID;
+
+  //
+  // Tell the mixer what it is going to be fed, and where to call back.
+  //
+  memset (&mciMixSetup, 0, sizeof(mciMixSetup));
+  mciMixSetup.ulBitsPerSample	= 16;
+  mciMixSetup.ulFormatTag	= MCI_WAVE_FORMAT_PCM;
+  mciMixSetup.ulSamplesPerSec	= SAMPLERATE;
+  mciMixSetup.ulChannels	= 2;
+  mciMixSetup.ulFormatMode	= MCI_PLAY;
+  mciMixSetup.ulDeviceType	= MCI_DEVTYPE_WAVEFORM_AUDIO;
+  mciMixSetup.pmixEvent		= I_DartEvent;
+
+  if (pMciSendCommand (mciDeviceID, MCI_MIXSETUP,
+		       MCI_WAIT | MCI_MIXSETUP_INIT,
+		       (PVOID)&mciMixSetup, 0) != MCIERR_SUCCESS)
+      return false;
+
+  //
+  // Ask DART for the buffers.  It allocates them itself -- they have to be
+  // memory the audio driver can reach -- and it is free to hand back a
+  // different size from the one requested, which is why dartBufSize is read
+  // back rather than assumed.
+  //
+  memset (&mciBufferParms, 0, sizeof(mciBufferParms));
+  mciBufferParms.ulStructLength	= sizeof(mciBufferParms);
+  mciBufferParms.ulNumBuffers	= NUM_DART_BUFFERS;
+  mciBufferParms.ulBufferSize	= DART_CHUNK;
+  mciBufferParms.pBufList	= mciBuffers;
+
+  if (pMciSendCommand (mciDeviceID, MCI_BUFFER,
+		       MCI_WAIT | MCI_ALLOCATE_MEMORY,
+		       (PVOID)&mciBufferParms, 0) != MCIERR_SUCCESS)
+      return false;
+
+  dartBuffers = true;
+  dartBufSize = mciBufferParms.ulBufferSize;
+
+  // A buffer too small to hold one whole mix would play nothing but silence
+  // -- see the loop in I_DartEvent -- so say so now rather than leave the
+  // user wondering why the game is mute.
+  if (dartBufSize < DART_CHUNK)
+      return false;
+
+  //
+  // Prime every buffer with silence and set the stream running.  Queueing
+  // them all at once is what starts it; from here on the callback keeps it
+  // fed.
+  //
+  for (i = 0; i < NUM_DART_BUFFERS; i++)
+  {
+      mciBuffers[i].ulStructLength = sizeof(MCI_MIX_BUFFER);
+      mciBuffers[i].ulBufferLength = dartBufSize;
+      mciBuffers[i].ulFlags	   = 0;
+      mciBuffers[i].ulUserParm	   = 0;
+      memset (mciBuffers[i].pBuffer, 0, dartBufSize);
+  }
+
+  dartUp = true;
+
+  if (mciMixSetup.pmixWrite (mciMixSetup.ulMixHandle,
+			     mciBuffers, NUM_DART_BUFFERS) != MCIERR_SUCCESS)
+  {
+      dartUp = false;
+      return false;
+  }
+
+  return true;
+}
+
+
 void
 I_InitSound()
-{ 
-#ifdef SNDSERV
-  char buffer[256];
-  
-  if (getenv("DOOMWADDIR"))
-    sprintf(buffer, "%s/%s",
-	    getenv("DOOMWADDIR"),
-	    sndserver_filename);
-  else
-    sprintf(buffer, "%s", sndserver_filename);
-  
-  // start sound process
-  if ( !access(buffer, X_OK) )
-  {
-    strcat(buffer, " -quiet");
-    sndserver = popen(buffer, "w");
-  }
-  else
-    fprintf(stderr, "Could not start sound server [%s]\n", buffer);
-#else
-    
+{
   int i;
-  
-#ifdef SNDINTR
-  fprintf( stderr, "I_SoundSetTimer: %d microsecs\n", SOUND_INTERVAL );
-  I_SoundSetTimer( SOUND_INTERVAL );
-#endif
-    
-  // Secure and configure sound device first.
-  fprintf( stderr, "I_InitSound: ");
-  
-  audio_fd = open("/dev/dsp", O_WRONLY);
-  if (audio_fd<0)
-    fprintf(stderr, "Could not open /dev/dsp\n");
-  
-                     
-  i = 11 | (2<<16);                                           
-  myioctl(audio_fd, SNDCTL_DSP_SETFRAGMENT, &i);
-  myioctl(audio_fd, SNDCTL_DSP_RESET, 0);
-  
-  i=SAMPLERATE;
-  
-  myioctl(audio_fd, SNDCTL_DSP_SPEED, &i);
-  
-  i=1;
-  myioctl(audio_fd, SNDCTL_DSP_STEREO, &i);
-  
-  myioctl(audio_fd, SNDCTL_DSP_GETFMTS, &i);
-  
-  if (i&=AFMT_S16_LE)    
-    myioctl(audio_fd, SNDCTL_DSP_SETFMT, &i);
-  else
-    fprintf(stderr, "Could not play signed 16 data\n");
 
-  fprintf(stderr, " configured audio device\n" );
-
-    
+  //
   // Initialize external data (all sounds) at start, keep static.
-  fprintf( stderr, "I_InitSound: ");
-  
+  //
+  // This happens before DART is started, not after.  The moment the stream
+  // begins, the callback can run and reach into the channel table, and it
+  // has no business doing that while the lumps it points at are still being
+  // loaded.
+  //
+  printf ("I_InitSound: ");
+
   for (i=1 ; i<NUMSFX ; i++)
-  { 
+  {
     // Alias? Example is the chaingun sound linked to pistol.
     if (!S_sfx[i].link)
     {
       // Load data from WAD file.
       S_sfx[i].data = getsfx( S_sfx[i].name, &lengths[i] );
-    }	
+    }
     else
     {
       // Previously loaded already?
@@ -812,16 +1000,32 @@ I_InitSound()
     }
   }
 
-  fprintf( stderr, " pre-cached all sound data\n");
-  
+  printf ("pre-cached all sound data\n");
+
   // Now initialize mixbuffer with zero.
   for ( i = 0; i< MIXBUFFERSIZE; i++ )
     mixbuffer[i] = 0;
-  
+
+  //
+  // And now the device.
+  //
+  printf ("I_InitSound: ");
+
+  if (M_CheckParm ("-nosound"))
+      printf ("disabled by -nosound.\n");
+  else if (I_InitDart ())
+      printf ("MMPM/2 DART, %i Hz 16 bit stereo, %i x %i byte buffers.\n",
+	      SAMPLERATE, NUM_DART_BUFFERS, (int)dartBufSize);
+  else
+  {
+      printf ("no MMPM/2 waveaudio device available, running silent.\n");
+
+      // Give back whatever did open before the failure.
+      I_ShutdownSound ();
+  }
+
   // Finished initialization.
-  fprintf(stderr, "I_InitSound: sound module ready\n");
-    
-#endif
+  printf ("I_InitSound: sound module ready\n");
 }
 
 
@@ -888,98 +1092,3 @@ int I_QrySongPlaying(int handle)
   return looping || musicdies > gametic;
 }
 
-
-
-//
-// Experimental stuff.
-// A Linux timer interrupt, for asynchronous
-//  sound output.
-// I ripped this out of the Timer class in
-//  our Difference Engine, including a few
-//  SUN remains...
-//  
-#ifdef sun
-    typedef     sigset_t        tSigSet;
-#else    
-    typedef     int             tSigSet;
-#endif
-
-
-// We might use SIGVTALRM and ITIMER_VIRTUAL, if the process
-//  time independend timer happens to get lost due to heavy load.
-// SIGALRM and ITIMER_REAL doesn't really work well.
-// There are issues with profiling as well.
-static int /*__itimer_which*/  itimer = ITIMER_REAL;
-
-static int sig = SIGALRM;
-
-// Interrupt handler.
-void I_HandleSoundTimer( int ignore )
-{
-  // Debug.
-  //fprintf( stderr, "%c", '+' ); fflush( stderr );
-  
-  // Feed sound device if necesary.
-  if ( flag )
-  {
-    // See I_SubmitSound().
-    // Write it to DSP device.
-    write(audio_fd, mixbuffer, SAMPLECOUNT*BUFMUL);
-
-    // Reset flag counter.
-    flag = 0;
-  }
-  else
-    return;
-  
-  // UNUSED, but required.
-  ignore = 0;
-  return;
-}
-
-// Get the interrupt. Set duration in millisecs.
-int I_SoundSetTimer( int duration_of_tick )
-{
-  // Needed for gametick clockwork.
-  struct itimerval    value;
-  struct itimerval    ovalue;
-  struct sigaction    act;
-  struct sigaction    oact;
-
-  int res;
-  
-  // This sets to SA_ONESHOT and SA_NOMASK, thus we can not use it.
-  //     signal( _sig, handle_SIG_TICK );
-  
-  // Now we have to change this attribute for repeated calls.
-  act.sa_handler = I_HandleSoundTimer;
-#ifndef sun    
-  //ac	t.sa_mask = _sig;
-#endif
-  act.sa_flags = SA_RESTART;
-  
-  sigaction( sig, &act, &oact );
-
-  value.it_interval.tv_sec    = 0;
-  value.it_interval.tv_usec   = duration_of_tick;
-  value.it_value.tv_sec       = 0;
-  value.it_value.tv_usec      = duration_of_tick;
-
-  // Error is -1.
-  res = setitimer( itimer, &value, &ovalue );
-
-  // Debug.
-  if ( res == -1 )
-    fprintf( stderr, "I_SoundSetTimer: interrupt n.a.\n");
-  
-  return res;
-}
-
-
-// Remove the interrupt. Set duration to zero.
-void I_SoundDelTimer()
-{
-  // Debug.
-  if ( I_SoundSetTimer( 0 ) == -1)
-    fprintf( stderr, "I_SoundDelTimer: failed to remove interrupt. Doh!\n");
-}
