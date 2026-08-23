@@ -135,6 +135,10 @@ int I_OS2_Printf (const char* fmt, ...)
 
     I_OS2_LogWrite (buf);
 
+    // The loading window watches the same stream and moves its bar when a
+    // line names a stage of the startup.
+    I_OS2_LoadNotice (buf);
+
     return n;
 }
 
@@ -150,6 +154,8 @@ int I_OS2_Puts (const char* s)
 
     I_OS2_LogWrite (s);
     I_OS2_LogWrite ("\n");
+
+    I_OS2_LoadNotice (s);
 
     return 0;
 }

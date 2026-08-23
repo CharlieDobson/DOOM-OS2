@@ -181,6 +181,27 @@ void I_OS2_LogShutdown (void);
 void I_OS2_LogWrite (const char* text);
 
 
+//
+// I_OS2_InitPM
+//
+// Become a Presentation Manager process and make the anchor block and message
+// queue.  Idempotent: the loading window asks for this early and
+// I_InitGraphics asks again later.  Defined in I_SYSTEM.C.
+//
+boolean I_OS2_InitPM (void);
+
+
+//
+// The loading window, in I_OS2LOAD.C.  LoadNotice is handed every line the
+// game prints on its way up and moves the bar when one names a stage;
+// LoadWindowClose is called once the game's own window is on the screen.
+//
+void I_OS2_LoadWindowOpen (void);
+void I_OS2_LoadNotice (const char* line);
+void I_OS2_LoadPump (void);
+void I_OS2_LoadWindowClose (void);
+
+
 #endif // __OS2DOOM__
 //-----------------------------------------------------------------------------
 //

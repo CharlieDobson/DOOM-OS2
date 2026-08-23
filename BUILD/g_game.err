@@ -1,0 +1,3 @@
+..\g_game.c(1216): Warning! E1181: Parameter 1, sign specifier mismatch
+..\g_game.c(1216): Note! I2003: source conversion type is 'unsigned char *'
+..\g_game.c(1216): Note! I2004: target conversion type is 'char const *'

@@ -66,6 +66,21 @@ rem            is read from the wrong offset and comes back zero, and no wall
 rem            in the game draws properly.  Nothing warns; it just looks
 rem            wrong.
 rem
+rem  -j        Plain char is signed, as gcc makes it.
+rem
+rem            NOT optional either, and for the same kind of reason.  Open
+rem            Watcom makes an unqualified char UNSIGNED by default.  DOOM
+rem            carries a tic's movement in ticcmd_t as "char forwardmove",
+rem            and walking backwards is simply a negative one -- so unsigned,
+rem            -25 arrives as 231 and pressing the back key runs the player
+rem            forward at speed.  Strafing left goes the same way.  Nothing
+rem            warns about this one either.
+rem
+rem            Two defaults now, -ei and -j, where Open Watcom differs from
+rem            gcc and the difference is silent.  Anything this code lays
+rem            over a file, a wire or a hardware structure is worth checking
+rem            against the compiler it was originally built with.
+rem
 rem  NOTE: the flags are -otexn, NOT -otexan.  The "a" is "relax alias
 rem            checking", which tells the compiler that pointers of different
 rem            types never refer to the same storage.  DOOM breaks that rule
@@ -79,7 +94,7 @@ rem            unreferenced rcsid[] string at the top of all sixty files, and
 rem            a good deal else that is deliberate, buries anything worth
 rem            reading.
 rem --------------------------------------------------------------------------
-set CFLAGS=-bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
+set CFLAGS=-bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -j -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
 
 rem  !! STACK !!  1 MB, not the default.
 rem
@@ -103,7 +118,7 @@ rem     the OS/2 port.  Everything else is the engine, as id released it,
 rem     apart from the handful of places noted in README.OS2.
 rem --------------------------------------------------------------------------
 echo Compiling the OS/2 platform layer...
-for %%F in (i_main i_system i_video i_sound i_net d_os2iwd i_os2mus i_os2log) do (
+for %%F in (i_main i_system i_video i_sound i_net d_os2iwd i_os2mus i_os2log i_os2load) do (
   wcc386 ..\%%F.c %CFLAGS%
   if errorlevel 1 goto failed
   if not exist %%F.obj goto failed
@@ -150,7 +165,7 @@ wlink sys os2v2 name DOOM.EXE ^
   option quiet option map option stack=%STACK% ^
   option description 'DOOM for OS/2' ^
   file i_main.obj,i_system.obj,i_video.obj,i_sound.obj,i_net.obj, ^
-       d_os2iwd.obj,i_os2mus.obj,i_os2log.obj, ^
+       d_os2iwd.obj,i_os2mus.obj,i_os2log.obj,i_os2load.obj, ^
        doomdef.obj,doomstat.obj,dstrings.obj,tables.obj,f_finale.obj, ^
        f_wipe.obj,d_main.obj,d_net.obj,d_items.obj,g_game.obj,m_menu.obj, ^
        m_misc.obj,m_argv.obj,m_bbox.obj,m_fixed.obj,m_swap.obj, ^

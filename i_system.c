@@ -188,6 +188,40 @@ int  I_GetTime (void)
 
 
 //
+// I_OS2_InitPM
+//
+// Become a Presentation Manager process, once.
+//
+// This used to live inside I_InitGraphics, which was the first thing that
+// needed a window.  The loading window needs one earlier -- before the WAD is
+// even opened -- so the work moved here, where either caller can ask for it
+// and only the first gets any.
+//
+boolean I_OS2_InitPM (void)
+{
+    if (os2_hab != NULLHANDLE)
+	return true;
+
+    if (!I_OS2_MorphToPM ())
+	return false;
+
+    os2_hab = WinInitialize (0);
+    if (os2_hab == NULLHANDLE)
+	return false;
+
+    os2_hmq = WinCreateMsgQueue (os2_hab, 0);
+    if (os2_hmq == NULLHANDLE)
+    {
+	WinTerminate (os2_hab);
+	os2_hab = NULLHANDLE;
+	return false;
+    }
+
+    return true;
+}
+
+
+//
 // I_Init
 //
 void I_Init (void)

@@ -1261,18 +1261,12 @@ void I_InitGraphics (void)
     //
     // Become a Presentation Manager process and open the window.
     //
-    if (!I_OS2_MorphToPM ())
+    // Usually already done: the loading window needs Presentation Manager
+    // long before this, and I_OS2_InitPM only ever does the work once.
+    if (!I_OS2_InitPM ())
 	I_Error ("I_InitGraphics: could not become a Presentation Manager\n"
 		 "process.  Start DOOM from an OS/2 window rather than a\n"
 		 "full screen session.");
-
-    os2_hab = WinInitialize (0);
-    if (os2_hab == NULLHANDLE)
-	I_Error ("I_InitGraphics: WinInitialize failed.");
-
-    os2_hmq = WinCreateMsgQueue (os2_hab, 0);
-    if (os2_hmq == NULLHANDLE)
-	I_Error ("I_InitGraphics: WinCreateMsgQueue failed.");
 
     if (!WinRegisterClass (os2_hab, (PSZ)DOOM_WINDOW_CLASS, DoomWndProc,
 			   CS_SIZEREDRAW | CS_MOVENOTIFY, 0))
@@ -1459,6 +1453,10 @@ void I_InitGraphics (void)
 	gpibmi.hdr.cPlanes   = 1;
 	gpibmi.hdr.cBitCount = 8;
     }
+
+    // The game's own window is up and about to be drawn into, so the loading
+    // window has nothing left to say.  This is the last thing it sees.
+    I_OS2_LoadWindowClose ();
 
     I_SetGrab (I_WantGrab ());
 }

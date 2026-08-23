@@ -71,6 +71,11 @@ main
     // at the very top: -nolog switches it off.
     I_OS2_LogInit ();
 
+    // And something for the player to look at while the WAD is read.  This
+    // is deliberately after the log: if opening the window fails, the run is
+    // still recorded.
+    I_OS2_LoadWindowOpen ();
+
     // Insurance against leaving the desktop with no mouse pointer at all if
     // the game traps while it has the pointer hidden.  See os2doom.h.
     xcpt.prev_structure   = NULL;

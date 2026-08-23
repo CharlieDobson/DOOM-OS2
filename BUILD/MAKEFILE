@@ -23,14 +23,14 @@ SRC = ..
 #  own, -dNORMALUNIX because OS/2 with Open Watcom has the POSIX headers DOOM
 #  expects and the desktop key bindings it wants, and -w1 because this is
 #  1997 code written for gcc.
-CFLAGS = -bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -zq -w1 -e25 -i=$(SRC)
+CFLAGS = -bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -j -zq -w1 -e25 -i=$(SRC)
 
 #  1 MB.  R_RenderBSPNode recurses down the BSP tree, and W_AddFile takes the
 #  whole lump directory on the stack with alloca.
 STACK = 1048576
 
 PLATFORM = i_main.obj i_system.obj i_video.obj i_sound.obj i_net.obj &
-           d_os2iwd.obj i_os2mus.obj i_os2log.obj
+           d_os2iwd.obj i_os2mus.obj i_os2log.obj i_os2load.obj
 
 ENGINE = doomdef.obj doomstat.obj dstrings.obj tables.obj f_finale.obj &
          f_wipe.obj d_main.obj d_net.obj d_items.obj g_game.obj m_menu.obj &
