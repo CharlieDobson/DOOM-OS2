@@ -11,7 +11,7 @@ rem  cannot be run here.
 rem
 rem  Steps:
 rem    1. wcc386  -bt=os2   -> one .OBJ per source
-rem    2. wlink   sys os2v2 -> DOOM.EXE  (LX, 1 MB stack)
+rem    2. wlink   sys os2v2_pm -> DOOM.EXE  (LX, PM, 1 MB stack)
 rem
 rem  There are no resources to bind: the port creates its window entirely in
 rem  code and has no icon of its own.  See README.OS2 for how to add one.
@@ -142,18 +142,26 @@ for %%F in (
 rem --------------------------------------------------------------------------
 rem  2. link
 rem
-rem     "sys os2v2", not "os2v2_pm".
+rem     "sys os2v2_pm", a real Presentation Manager application.
 rem
-rem     This produces a text-mode (VIO) executable, and I_InitGraphics turns
-rem     the running process into a Presentation Manager one -- see
-rem     I_OS2_MorphToPM in I_SYSTEM.C.  That is what lets DOOM print its
-rem     startup banner to the OS/2 window it was launched from and still open
-rem     a PM window a moment later.
+rem     It was not always.  For most of this port's life it was linked "sys
+rem     os2v2" -- a text mode program that turned itself into a PM one at run
+rem     time (I_OS2_MorphToPM, still in I_SYSTEM.C and still called, harmlessly
+rem     returning at once now that the process is already type 3).  That was
+rem     done so DOOM's startup commentary had a session to appear in.
 rem
-rem     Linking "sys os2v2_pm" instead also works and needs no source change,
-rem     but everything printed before the window opens is lost, including the
-rem     message when a WAD cannot be found.  I_Error puts that in a message
-rem     box as well, for exactly this reason.
+rem     Two things replaced that session and are better than it was.  DOOM.LOG
+rem     keeps every line, so a run that went wrong can be read afterwards
+rem     rather than only watched at the time; and the loading window shows a
+rem     player what is happening in words meant for them.  Neither needs a
+rem     command prompt behind the game, and the VIO session brought problems
+rem     of its own -- it competed for the keyboard focus, and it outlived the
+rem     game whenever the process failed to exit cleanly.
+rem
+rem     I_Error still puts its message in a PM message box, which is what
+rem     makes a missing WAD reportable with no session to report it to.
+rem
+rem     Going back is one word: os2v2_pm -> os2v2, no source change.
 rem
 rem     Nothing is imported beyond the base system: DIVE, MMPM/2 and TCP/IP
 rem     are all loaded by name at run time, so this DOOM.EXE loads on a plain
@@ -161,7 +169,7 @@ rem     OS/2 2.0 with no multimedia and no networking, and simply does
 rem     without them.
 rem --------------------------------------------------------------------------
 echo Linking...
-wlink sys os2v2 name DOOM.EXE ^
+wlink sys os2v2_pm name DOOM.EXE ^
   option quiet option map option stack=%STACK% ^
   option description 'DOOM for OS/2' ^
   file i_main.obj,i_system.obj,i_video.obj,i_sound.obj,i_net.obj, ^
@@ -209,7 +217,7 @@ echo.
 echo Built BUILD\DOOM.EXE  (OS/2 2.x / Warp, 32-bit).
 echo.
 echo Put it beside a DOOM WAD, or set DOOMWADDIR to point at one, and run it
-echo from an OS/2 window.  See README.OS2.
+echo from the desktop or an OS/2 window.  See README.OS2.
 popd
 endlocal
 goto :eof

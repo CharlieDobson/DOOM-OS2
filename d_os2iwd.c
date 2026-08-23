@@ -1,9 +1,10 @@
 // Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
 //
-// $Id:$
+// Copyright (C) 2026 by Charlie Dobson.
 //
-// Copyright (C) 1993-1996 by id Software, Inc.
+// Written for the OS/2 port of DOOM.  Nothing in this file comes from id
+// Software: it exists only because the port needed it.
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as
@@ -13,8 +14,6 @@
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // FITNESS FOR A PARTICULAR PURPOSE. See the DOOM Source Code License
 // for more details.
-//
-// $Log:$
 //
 // DESCRIPTION:
 //	Finding and identifying the IWAD -- OS/2 port.
@@ -428,12 +427,13 @@ boolean D_OS2FindIWAD (void)
 	if (D_TryIwad (myargv[p+1]))
 	    return true;
 
-	I_Error ("-iwad: %s is not a DOOM IWAD.\n"
-		 "\n"
-		 "It must exist, be readable, and be an IWAD rather than a\n"
-		 "PWAD -- a patch WAD holds only replacement lumps and cannot\n"
-		 "start a game on its own.",
-		 myargv[p+1]);
+	// Same rule as below: the explanation to the log, the fact to the
+	// screen.  A PWAD given to -iwad is the usual cause -- it holds only
+	// replacement lumps and cannot start a game on its own.
+	printf ("-iwad: %s must exist, be readable, and be an IWAD rather"
+		" than a PWAD.\n", myargv[p+1]);
+
+	I_Error ("%s is not a DOOM WAD file.", myargv[p+1]);
     }
 
     BuildSearchDirs ();
@@ -463,21 +463,24 @@ boolean D_OS2FindIWAD (void)
 	    return true;
 
     //
-    // Nothing.  Say what was tried.
+    // Nothing.  The particulars go to the log; the screen gets a sentence.
+    //
+    // Which names were tried and which directories were searched is exactly
+    // what is wanted when working out why a WAD that is plainly there was not
+    // found -- and exactly what nobody wants to read in a message box.
+    // DOOM.LOG keeps it, and keeps it after the box has been dismissed.
     //
     printf ("\n");
-    printf ("No DOOM IWAD found.  Looked in:\n");
+    printf ("No DOOM IWAD found.  Looked for doom2f.wad, doom2.wad,"
+	    " plutonia.wad, tnt.wad,\n");
+    printf ("doomu.wad, doom.wad and doom1.wad -- and for any other file"
+	    " that is an\n");
+    printf ("IWAD -- in:\n");
     for (d = 0; d < numsearchdirs; d++)
 	printf ("    %s\n", searchdir[d]);
     printf ("\n");
 
-    I_Error ("No IWAD found.\n"
-	     "\n"
-	     "DOOM needs one of the game data files -- DOOM.WAD, DOOM2.WAD,\n"
-	     "TNT.WAD, PLUTONIA.WAD or the shareware DOOM1.WAD.  Put one\n"
-	     "beside DOOM.EXE, or set DOOMWADDIR to the directory holding\n"
-	     "it, or name it with -iwad.  See the console for the list of\n"
-	     "directories that were searched.");
+    I_Error ("WAD file not found.");
 
     return false;			// not reached
 }

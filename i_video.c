@@ -4,6 +4,7 @@
 // $Id:$
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
+// OS/2 Port by Charlie Dobson
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as
@@ -1501,11 +1502,21 @@ void I_ShutdownGraphics (void)
 	os2_hwndClient = NULLHANDLE;
     }
 
-    if (os2_hmq != NULLHANDLE && !inWndProc)
-    {
-	WinDestroyMsgQueue (os2_hmq);
-	os2_hmq = NULLHANDLE;
-    }
+    //
+    // The message queue is deliberately NOT destroyed, any more than the
+    // anchor block is.
+    //
+    // I_Error calls this and then puts its message in a message box, and
+    // WinMessageBox needs a message queue on the calling thread just as much
+    // as it needs an anchor block -- it has nowhere to dispatch to otherwise.
+    // Destroying the queue here left it beeping and returning without ever
+    // showing anything, which went unnoticed for as long as the error was
+    // also being printed to a session.  With the port linked as a real PM
+    // application there is no session, and the box is the only way an error
+    // can be reported at all.
+    //
+    // The process is about to end, which releases both.
+    //
 
     // The anchor block is deliberately *not* released here.  I_Error puts up
     // a message box after calling this, and WinMessageBox needs it.  The

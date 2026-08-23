@@ -4,6 +4,7 @@
 // $Id:$
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
+// OS/2 Port by Charlie Dobson
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as

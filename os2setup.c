@@ -1,6 +1,22 @@
 // Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
 //
+// Copyright (C) 2026 by Charlie Dobson.
+//
+// Written for the OS/2 port of DOOM.  Nothing in this file comes from id
+// Software: it exists only because the port needed it.  It is a separate
+// program and links against none of the engine -- the only thing it shares
+// with DOOM is the format of DEFAULT.CFG.
+//
+// This source is available for distribution and/or modification
+// only under the terms of the DOOM Source Code License as
+// published by id Software. All rights reserved.
+//
+// The source is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// FITNESS FOR A PARTICULAR PURPOSE. See the DOOM Source Code License
+// for more details.
+//
 // DESCRIPTION:
 //	OS2SETUP.EXE -- the settings program for DOOM for OS/2.
 //
@@ -512,10 +528,30 @@ static void MakeControls (HWND hwnd)
 
     y = CLIENT_H - 30 - 180;
 
-    WinCreateWindow (hwnd, (PSZ)WC_LISTBOX, NULL,
-		     WS_VISIBLE | LS_NOADJUSTPOS,
-		     14, y, CLIENT_W - 28, 175,
-		     hwnd, HWND_TOP, IDL_KEYS, NULL, NULL);
+    {
+	static char	fixedfont[] = "10.System VIO";
+	HWND		hwndList;
+
+	hwndList = WinCreateWindow (hwnd, (PSZ)WC_LISTBOX, NULL,
+				    WS_VISIBLE | LS_NOADJUSTPOS,
+				    14, y, CLIENT_W - 28, 175,
+				    hwnd, HWND_TOP, IDL_KEYS, NULL, NULL);
+
+	//
+	// A fixed pitch font, because each row is two columns held apart by
+	// padding.
+	//
+	// Presentation Manager's default face is proportional, and in a
+	// proportional font a run of spaces lines nothing up: "Fire" and
+	// "Sidestep modifier" padded to the same COUNT of characters are
+	// nothing like the same WIDTH, so the key names end up scattered
+	// down the list.  System VIO is OS/2's own fixed pitch face and is
+	// on every machine that can run this.
+	//
+	if (hwndList != NULLHANDLE)
+	    WinSetPresParam (hwndList, PP_FONTNAMESIZE,
+			     sizeof(fixedfont), (PVOID)fixedfont);
+    }
 
     y -= 40;
 
@@ -548,9 +584,13 @@ static void MakeControls (HWND hwnd)
 
     y -= 34;
 
-    WinCreateWindow (hwnd, (PSZ)WC_STATIC, (PSZ)"Window size",
+    // The note lives on the same line as the heading: below the radio buttons
+    // there is only room for the Save and Cancel buttons, and a static put
+    // there would sit on top of them.
+    WinCreateWindow (hwnd, (PSZ)WC_STATIC,
+		     (PSZ)"Window size",
 		     WS_VISIBLE | SS_TEXT | DT_LEFT | DT_VCENTER,
-		     14, y, 200, 22,
+		     14, y, CLIENT_W - 28, 22,
 		     hwnd, HWND_TOP, -1, NULL, NULL);
 
     y -= 28;
@@ -570,13 +610,6 @@ static void MakeControls (HWND hwnd)
 		     304, y, 140, 24,
 		     hwnd, HWND_TOP, IDR_3X, NULL, NULL);
 
-    WinCreateWindow (hwnd, (PSZ)WC_STATIC,
-		     (PSZ)"The picture is always 320x200; a larger window is "
-			  "the same picture, bigger.",
-		     WS_VISIBLE | SS_TEXT | DT_LEFT | DT_VCENTER,
-		     14, 52, CLIENT_W - 28, 20,
-		     hwnd, HWND_TOP, -1, NULL, NULL);
-
     WinCreateWindow (hwnd, (PSZ)WC_BUTTON, (PSZ)"~Save",
 		     WS_VISIBLE | BS_PUSHBUTTON | BS_DEFAULT,
 		     CLIENT_W - 220, 12, 100, 32,
@@ -590,6 +623,35 @@ static void MakeControls (HWND hwnd)
 
 
 //
+// CountControls
+//
+// How many of the controls actually exist.
+//
+// Creating a window in Presentation Manager fails quietly -- a null handle
+// back, nothing said -- and a client full of nothing looks exactly like a
+// client whose controls were all painted over.  Asking afterwards tells the
+// two apart, and costs ten calls once.
+//
+static int CountControls (HWND hwnd)
+{
+    static const ULONG	ids[] =
+    {
+	IDL_KEYS, IDB_CHANGE, IDB_DEFAULTS, IDC_MOUSE, IDE_SENS,
+	IDR_1X, IDR_2X, IDR_3X, IDB_SAVE, IDB_CANCEL
+    };
+
+    int		n = 0;
+    int		i;
+
+    for (i = 0; i < (int)(sizeof(ids)/sizeof(ids[0])); i++)
+	if (WinWindowFromID (hwnd, ids[i]) != NULLHANDLE)
+	    n++;
+
+    return n;
+}
+
+
+//
 // SetupWndProc
 //
 static MRESULT EXPENTRY SetupWndProc (HWND hwnd, ULONG msg,
@@ -598,8 +660,16 @@ static MRESULT EXPENTRY SetupWndProc (HWND hwnd, ULONG msg,
     switch (msg)
     {
       case WM_CREATE:
+	//
+	// The controls are NOT built here.
+	//
+	// This message arrives from inside WinCreateStdWindow, while the frame
+	// is still half assembled and the client has no size yet.  Building
+	// them afterwards, when there is a frame with a client of a known
+	// size inside it, is both easier to reason about and easier to check:
+	// main can look at what it got.
+	//
 	hwndClient = hwnd;
-	MakeControls (hwnd);
 	return (MRESULT)FALSE;
 
       case WM_ERASEBACKGROUND:
@@ -732,16 +802,93 @@ int main (int argc, char** argv)
     flFrame = FCF_TITLEBAR | FCF_SYSMENU | FCF_MINBUTTON | FCF_BORDER
 	    | FCF_TASKLIST;
 
+    //
+    // WS_CLIPCHILDREN is not optional, and the reason is a difference between
+    // Presentation Manager and every other windowing system this code might
+    // be read next to.
+    //
+    // PM does NOT clip a parent's drawing to exclude its children.  Without
+    // this style the client's default WM_PAINT erases the whole client area
+    // straight over the controls sitting on it, and since nothing then
+    // invalidates them, they stay erased -- a window that is correctly sized,
+    // correctly titled, and completely empty.
+    //
     hwndFrame = WinCreateStdWindow (HWND_DESKTOP, 0, &flFrame,
 				    (PSZ)CLASS_NAME,
 				    (PSZ)"DOOM for OS/2 -- Setup",
-				    0, NULLHANDLE, 0, &hwndClient);
+				    WS_VISIBLE | WS_CLIPCHILDREN,
+				    NULLHANDLE, 0, &hwndClient);
 
     if (hwndFrame == NULLHANDLE)
     {
 	WinDestroyMsgQueue (hmq);
 	WinTerminate (hab);
 	return 1;
+    }
+
+    //
+    // Now build the controls, and then check that they are there.
+    //
+    // WinCreateStdWindow reports a frame it made even when the client inside
+    // it failed, so a titled window of the right size proves nothing about
+    // what is in it.
+    //
+    if (hwndClient == NULLHANDLE)
+    {
+	WinMessageBox (HWND_DESKTOP, hwndFrame,
+		       (PSZ)"The client window could not be created, so there "
+			    "is nothing to show.",
+		       (PSZ)"DOOM Setup", 0, MB_OK | MB_ERROR);
+	WinDestroyWindow (hwndFrame);
+	WinDestroyMsgQueue (hmq);
+	WinTerminate (hab);
+	return 1;
+    }
+
+    //
+    // Size the frame BEFORE the controls go in, so that the client they are
+    // placed on is already the size they were laid out for.
+    //
+    // Positions are offsets from the client's bottom left corner and survive
+    // a later resize, so this is not strictly required -- but a control put
+    // on a client of no size at all is a thing to have to reason about, and
+    // there is no reason to have to.  Showing the window is left until the
+    // end, so the player never sees it half built.
+    //
+    rcl.xLeft	= 0;
+    rcl.yBottom	= 0;
+    rcl.xRight	= CLIENT_W;
+    rcl.yTop	= CLIENT_H;
+    WinCalcFrameRect (hwndFrame, &rcl, FALSE);
+
+    frame_cx = rcl.xRight - rcl.xLeft;
+    frame_cy = rcl.yTop - rcl.yBottom;
+
+    scr_cx = WinQuerySysValue (HWND_DESKTOP, SV_CXSCREEN);
+    scr_cy = WinQuerySysValue (HWND_DESKTOP, SV_CYSCREEN);
+
+    WinSetWindowPos (hwndFrame, HWND_TOP,
+		     (scr_cx - frame_cx) / 2, (scr_cy - frame_cy) / 2,
+		     frame_cx, frame_cy,
+		     SWP_SIZE | SWP_MOVE);
+
+    MakeControls (hwndClient);
+
+    {
+	int	made = CountControls (hwndClient);
+
+	if (made < 10)
+	{
+	    char	msg[256];
+
+	    sprintf (msg, "Only %i of 10 controls were created "
+			  "(last PM error %04lx).\n\n"
+			  "The window will be empty.",
+		     made, (unsigned long)WinGetLastError (hab));
+
+	    WinMessageBox (HWND_DESKTOP, hwndFrame, (PSZ)msg,
+			   (PSZ)"DOOM Setup", 0, MB_OK | MB_ERROR);
+	}
     }
 
     //
@@ -780,22 +927,9 @@ int main (int argc, char** argv)
 
     LoadToControls ();
 
-    rcl.xLeft	= 0;
-    rcl.yBottom	= 0;
-    rcl.xRight	= CLIENT_W;
-    rcl.yTop	= CLIENT_H;
-    WinCalcFrameRect (hwndFrame, &rcl, FALSE);
-
-    frame_cx = rcl.xRight - rcl.xLeft;
-    frame_cy = rcl.yTop - rcl.yBottom;
-
-    scr_cx = WinQuerySysValue (HWND_DESKTOP, SV_CXSCREEN);
-    scr_cy = WinQuerySysValue (HWND_DESKTOP, SV_CYSCREEN);
-
-    WinSetWindowPos (hwndFrame, HWND_TOP,
-		     (scr_cx - frame_cx) / 2, (scr_cy - frame_cy) / 2,
-		     frame_cx, frame_cy,
-		     SWP_SIZE | SWP_MOVE | SWP_SHOW | SWP_ACTIVATE);
+    // Built, filled in, and only now put on the screen.
+    WinSetWindowPos (hwndFrame, HWND_TOP, 0, 0, 0, 0,
+		     SWP_SHOW | SWP_ACTIVATE | SWP_ZORDER);
 
     WinSetFocus (HWND_DESKTOP, hwndClient);
 

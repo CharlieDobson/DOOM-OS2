@@ -4,6 +4,7 @@
 // $Id:$
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
+// OS/2 Port by Charlie Dobson
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as
@@ -1616,7 +1617,7 @@ static boolean I_InitPlaylist (void)
     // is.  For a Sound Blaster of this generation that default is the only
     // thing the hardware does -- 11025 Hz, eight bit, mono -- so assuming it
     // is a fair bet, and a wrong bet is audible rather than dangerous: the
-    // pitch would be off, and leaving -playlist off turns it back off again.
+    // pitch would be off, and -noplaylist turns it back off again.
     //
     if (!got)
     {
@@ -1802,23 +1803,25 @@ I_InitSound()
       I_ShutdownSound ();
 
       //
-      // The playlist path is asked for, not assumed.
+      // The playlist path runs automatically, and did not always.
       //
-      // It hands a 16 bit device driver the addresses of memory this process
-      // owns, and gets sound out of hardware that has no other way of
-      // producing any -- but when it goes wrong it does not go wrong politely.
-      // On this machine it locked the system hard and left the disk needing
-      // CHKDSK.  That is not something to do to somebody who merely started
-      // the game.
+      // It was made opt-in after it locked a machine hard enough to need
+      // CHKDSK -- which was the right thing to do while the cause was
+      // unknown, and the wrong thing to keep once it was.  The cause was this
+      // file handing a 16 bit device driver memory with no 16:16 alias; the
+      // fix is OBJ_TILE, and it has since played for hours without incident.
       //
-      // So DART is tried automatically, and if there is none, the game says
-      // what the alternative is and runs silent until asked.
+      // Leaving it opt-in after that would have meant a game with no sound
+      // effects for anyone who did not know to ask -- and nobody launching
+      // from the Workplace Shell passes command line switches.  DART is still
+      // tried first; this is only reached on hardware that has no other way
+      // of making a sound at all.
       //
-      if (!M_CheckParm ("-playlist"))
-	  printf ("I_InitSound: this driver has no DART, so there is no sound."
-		  "\n             Run with -playlist to try the older"
-		  " streaming interface\n"
-		  "             -- see README.OS2 first.\n");
+      // -noplaylist switches it off again.
+      //
+      if (M_CheckParm ("-noplaylist"))
+	  printf ("I_InitSound: no DART, and the playlist fallback is"
+		  " switched off.\n");
       else
       {
 	  //

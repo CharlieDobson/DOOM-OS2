@@ -1,7 +1,10 @@
 // Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
 //
-// Copyright (C) 1993-1996 by id Software, Inc.
+// Copyright (C) 2026 by Charlie Dobson.
+//
+// Written for the OS/2 port of DOOM.  Nothing in this file comes from id
+// Software: it exists only because the port needed it.
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as
@@ -203,8 +206,3 @@ void I_OS2_LoadWindowClose (void);
 
 
 #endif // __OS2DOOM__
-//-----------------------------------------------------------------------------
-//
-// $Log:$
-//
-//-----------------------------------------------------------------------------

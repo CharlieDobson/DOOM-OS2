@@ -48,12 +48,12 @@ OBJS = $(PLATFORM) $(ENGINE)
 
 all : DOOM.EXE .SYMBOLIC
 
-#  "sys os2v2", not os2v2_pm.  The program is linked as a text mode
-#  application and morphs itself into a Presentation Manager one when it
-#  opens its window, so that the startup banner still reaches the session it
-#  was started from.  See README.OS2.
+#  "sys os2v2_pm": a real Presentation Manager application, with no session
+#  behind it.  The startup commentary goes to DOOM.LOG and to the loading
+#  window instead, and I_Error reports through a message box.  See MKOS2.CMD
+#  for the longer note on why this changed, and README.OS2.
 DOOM.EXE : $(OBJS)
-	wlink sys os2v2 name DOOM.EXE &
+	wlink sys os2v2_pm name DOOM.EXE &
 	  option quiet option map option stack=$(STACK) &
 	  option description 'DOOM for OS/2' &
 	  file { $(OBJS) }

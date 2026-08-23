@@ -1,9 +1,10 @@
 // Emacs style mode select   -*- C++ -*-
 //-----------------------------------------------------------------------------
 //
-// $Id:$
+// Copyright (C) 2026 by Charlie Dobson.
 //
-// Copyright (C) 1993-1996 by id Software, Inc.
+// Written for the OS/2 port of DOOM.  Nothing in this file comes from id
+// Software: it exists only because the port needed it.
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as
@@ -13,8 +14,6 @@
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // FITNESS FOR A PARTICULAR PURPOSE. See the DOOM Source Code License
 // for more details.
-//
-// $Log:$
 //
 // DESCRIPTION:
 //	Music for the OS/2 port.

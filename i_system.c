@@ -4,6 +4,7 @@
 // $Id:$
 //
 // Copyright (C) 1993-1996 by id Software, Inc.
+// OS/2 Port by Charlie Dobson
 //
 // This source is available for distribution and/or modification
 // only under the terms of the DOOM Source Code License as
@@ -419,6 +420,11 @@ void I_Error (char *error, ...)
     I_OS2_LogWrite ("Error: ");
     I_OS2_LogWrite (message);
     I_OS2_LogWrite ("\n");
+
+    // If the game never got as far as its own window, the loading window is
+    // still on the screen.  Take it down before the message box, so that what
+    // is left is the explanation and nothing else.
+    I_OS2_LoadWindowClose ();
 
     // Shutdown. Here might be other errors.
     if (demorecording)
