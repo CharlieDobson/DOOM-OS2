@@ -118,7 +118,7 @@ rem     the OS/2 port.  Everything else is the engine, as id released it,
 rem     apart from the handful of places noted in README.OS2.
 rem --------------------------------------------------------------------------
 echo Compiling the OS/2 platform layer...
-for %%F in (i_main i_system i_video i_sound i_net d_os2iwd i_os2mus i_os2log i_os2load) do (
+for %%F in (i_main i_system i_video i_sound i_net d_os2iwd i_os2mus i_os2log i_os2load i_os2wad) do (
   wcc386 ..\%%F.c %CFLAGS%
   if errorlevel 1 goto failed
   if not exist %%F.obj goto failed
@@ -173,7 +173,7 @@ wlink sys os2v2_pm name DOOM.EXE ^
   option quiet option map option stack=%STACK% ^
   option description 'DOOM for OS/2' ^
   file i_main.obj,i_system.obj,i_video.obj,i_sound.obj,i_net.obj, ^
-       d_os2iwd.obj,i_os2mus.obj,i_os2log.obj,i_os2load.obj, ^
+       d_os2iwd.obj,i_os2mus.obj,i_os2log.obj,i_os2load.obj,i_os2wad.obj, ^
        doomdef.obj,doomstat.obj,dstrings.obj,tables.obj,f_finale.obj, ^
        f_wipe.obj,d_main.obj,d_net.obj,d_items.obj,g_game.obj,m_menu.obj, ^
        m_misc.obj,m_argv.obj,m_bbox.obj,m_fixed.obj,m_swap.obj, ^

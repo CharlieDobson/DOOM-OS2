@@ -206,6 +206,7 @@ static boolean			dartBuffers = false;	// memory is allocated
 // to; defined further down, with the rest of the playlist code.
 static boolean I_InitPlaylist (void);
 static void    I_FreePlaylistMemory (void);
+static void    I_PlaylistTimedRefill (void);
 
 //
 // Everything the audio driver is given a pointer to is allocated with
@@ -246,6 +247,112 @@ static ULONG		plBlockSize	= 0;
 static ULONG		plMessages	= 0;
 static int		plStartTime	= 0;
 static boolean		plComplained	= false;
+
+//
+// Refilling by the clock, for a driver that never asks.
+//
+// MESSAGE_OPERATION is the part of a playlist that a driver is most likely to
+// have left out: DATA and BRANCH are what make sound come out, and a message
+// back to the application is a convenience.  A driver that ignores them plays
+// the same few blocks round and round for ever and never says a word, which
+// from the speaker is silence.
+//
+// Nothing about that stops us knowing when a block is free, though.  The
+// device consumes a block in a time that is fixed by its size and the sample
+// rate, so the clock says where the playlist has got to just as well as the
+// driver would have -- and unlike the driver, the clock is always there.
+//
+// Only used when no message has arrived at all.  A driver that does send them
+// is believed in preference: it knows, and this only calculates.
+//
+static boolean		plTimed		= false;
+static ULONG		plNextFill	= 0;
+static int		plBlockTics	= 1;
+
+//
+// When the device last said anything.
+//
+// This was once used to restart a playlist that had gone quiet for a second,
+// on the theory that a playlist which ends instead of branching looks exactly
+// like a driver that has stopped reporting.  It cost a trap that took the
+// machine down with it, and the reason is worth keeping written down: the
+// count only advances when a window message is dispatched, and nothing
+// dispatches messages during a level load.  So the first tic after every level
+// saw a second of apparent silence, rewrote all four blocks -- including the
+// one the card was reading out of at that moment -- and issued a second
+// MCI_PLAY at a device that had never stopped playing.  A 16 bit driver from
+// 1992 is under no obligation to survive that, and did not.
+//
+// It is kept only as something the diagnostics can report.  Nothing acts on
+// it.
+//
+static int		plLastMsg	= 0;
+
+// The loudest sample the mixer has produced, and how many times the game has
+// asked for a sound effect.  Between them these are the one thing the log
+// cannot otherwise show: whether the silence is DOOM's or the driver's.
+#define PL_MAX_REPORTS		8
+
+static int		plPeak		= 0;
+static int		sfxStarts	= 0;
+static int		plReports	= 0;
+static int		plNextReport	= 0;
+
+// Blocks mixed for so far this tic, and how many requests have been turned
+// down because the game was already behind.  See the safety valve in
+// I_OS2_PlaylistNotify.
+static int		plBurst		= 0;
+static int		plDropped	= 0;
+
+// Whether the playlist asks the driver to report its progress, or works the
+// timing out for itself.  Off by default, for reasons set out at length above
+// I_BuildPlaylist; -plmessages turns it on.
+static boolean		plUseMessages	= false;
+
+//
+// Chunked playback: one pass at a time, re-armed.
+//
+// A looping playlist -- four blocks and a BRANCH back to the first -- takes
+// this machine down every time, after a few seconds of playing perfectly
+// well.  A playlist that ends instead of looping does not: it plays its four
+// blocks and stops, and the machine is still standing afterwards.  That was
+// tested for exactly this reason and it is the only thing separating the two.
+//
+// So the driver can be handed buffers and will DMA out of them safely.  What
+// it cannot survive is being left to walk the same list round and round: the
+// most likely reading is that something is accounted for per DATA element
+// executed and reclaimed only when a play completes, so a list that never
+// completes never gives it back, and a few hundred elements in, the driver
+// runs out and faults at ring 0.  That fits the timing, it fits why every
+// earlier fix missed, and it fits why -plexit survives.
+//
+// It also says what to do about it.  Rather than one endless play, every pass
+// is a complete one: fill the blocks, play them, wait for the device to say
+// it has finished, then do it again.  Each pass ends properly, so whatever is
+// being accumulated is handed back at the end of each.
+//
+// The cost is a seam between passes, and it is not free -- 371 milliseconds
+// of sound at a time, with however long the game takes to notice the pass
+// ended before the next one starts.  Choppy sound is worth having where the
+// alternative is a reboot.
+//
+// -plbranch restores the single looping playlist for a driver that can take
+// one, which is the better arrangement where it works.
+//
+static boolean		plChunked	= true;
+static boolean		plPlaying	= false;	// a pass is in flight
+static int		plPassTics	= 1;		// how long one lasts
+static int		plPassEnd	= 0;		// tic it should end by
+static int		plPasses	= 0;
+
+// How long past the calculated end of a pass to wait before giving up on
+// being told and assuming it finished.  The notification is the primary
+// signal; this only stops a dropped one from stopping the sound for good.
+#define PL_PASS_MARGIN		4
+
+static boolean I_StartPass (void);
+
+static void I_ReportSound (void);
 
 // Guards the mixing channel table, which two threads touch: the game thread
 // by way of I_StartSound, and DART's own thread by way of the callback.
@@ -602,6 +709,46 @@ I_StartSound
   // UNUSED
   priority = 0;
 
+  // Counted only so the log can say whether the game ever asks for a sound
+  // effect at all.  Silence with this at zero is not an audio problem.
+  sfxStarts++;
+
+  //
+  // The volume arrives on the menu's scale and has to be put on the mixer's.
+  //
+  // Two scales are in play and the released source does not reconcile them.
+  // snd_SfxVolume is 0 to 15 -- that is what the slider shows, what the
+  // config file holds, and what S_AdjustSoundParams does its distance
+  // arithmetic in.  vol_lookup below is built for 0 to 127.  Everything
+  // between S_StartSound and here leaves the number alone, so a full volume
+  // setting of 15 reached the mixer as 15 of 127 and the game played at an
+  // eighth of the level it was mixed for.
+  //
+  // id knew: d_main.c and m_menu.c both call the sound volume functions with
+  // "/* *8 */" commented out beside the argument.  Under linuxdoom that was
+  // correct, because the volume went to a separate sound server that scaled
+  // it again at the other end.  This port mixes in process, so nothing ever
+  // scales it and the eight is simply missing.
+  //
+  // It cost a long hunt.  Eight bit output is what made it silence rather
+  // than quietness: at 15 of 127 the samples spanned about a dozen of the
+  // 256 levels the card has, which is inaudible over a speaker.  The log
+  // said so precisely once it was asked -- a peak of 1548 out of 32767,
+  // which is exactly (6 * 128 * 256) / 127, the number a volume of 8 with a
+  // little stereo separation produces and no other volume does.
+  //
+  // Applied here rather than at the call sites so that the menu, the config
+  // file and S_AdjustSoundParams all keep working in the units they were
+  // written for.  The clamp is defensive: 15 * 8 is 120, and addsfx calls
+  // I_Error above 127.
+  //
+  vol *= 8;
+
+  if (vol > 127)
+      vol = 127;
+  else if (vol < 0)
+      vol = 0;
+
   // addsfx writes the channel table that DART's thread is reading, so the
   // two are kept apart here.  Without it the mixer can pick up a channel
   // whose sample pointer has been stored but whose end pointer has not, and
@@ -815,10 +962,17 @@ I_SubmitSound(void)
 
 	if (I_InitPlaylist ())
 	    printf ("I_InitSound: MMPM/2 playlist, %i Hz %i bit %s,"
-		    " %i x %i byte blocks.\n",
+		    " %i x %i byte blocks,\n"
+		    "             refilled %s (%i tics per block)%s.\n",
 		    dartRate, dartBits,
 		    dartChannels == 2 ? "stereo" : "mono",
-		    NUM_PL_BUFFERS, (int)plBlockSize);
+		    NUM_PL_BUFFERS, (int)plBlockSize,
+		    plChunked	  ? "a pass at a time"
+		    : plUseMessages ? "on the driver's messages"
+				    : "on the clock",
+		    plBlockTics,
+		    M_CheckParm ("-plexit")
+			? ", ONE PASS ONLY (-plexit)" : "");
 	else
 	    printf ("I_InitSound: the playlist interface failed too;"
 		    " running silent.\n");
@@ -826,17 +980,79 @@ I_SubmitSound(void)
 
     //
     // A playlist that started but has never asked for a block is playing the
-    // same few hundred milliseconds for ever, and sounds like nothing at all.
-    // Three seconds is far longer than the buffer, so by then the device has
-    // either asked or it never will.
+    // same few hundred milliseconds over and over.  One second is several
+    // times a block, so by then the device has either asked or it never will
+    // -- and if it never will, the clock takes over.
     //
-    if (playlistUp && !plMessages && !plComplained
-	&& I_GetTime () - plStartTime > 3*TICRATE)
+    if (playlistUp && !plMessages && !plTimed
+	&& I_GetTime () - plStartTime > TICRATE)
     {
-	plComplained = true;
-	printf ("I_InitSound: the playlist is playing but the device has"
-		" never asked\n"
-		"             for another block -- no sound will follow.\n");
+	plTimed = true;
+
+	if (!plComplained)
+	{
+	    plComplained = true;
+	    printf ("I_InitSound: this driver does not report playlist"
+		    " progress;\n"
+		    "             refilling on the clock instead"
+		    " (%i tics per block).\n", plBlockTics);
+	}
+    }
+
+    if (playlistUp && plTimed)
+	I_PlaylistTimedRefill ();
+
+    //
+    // Chunked playback: keep the passes coming.
+    //
+    // The device is asked to say when a pass has finished, and normally does.
+    // The clock is only here so that one lost notification does not end the
+    // sound for the rest of the session -- it waits out the whole pass and a
+    // margin on top before assuming anything, because guessing early would
+    // mean writing buffers under a device that is still reading them, which
+    // is precisely the thing that used to stop the machine.
+    //
+    if (playlistUp && plChunked)
+    {
+	if (plPlaying && I_GetTime () > plPassEnd + PL_PASS_MARGIN)
+	    plPlaying = false;
+
+	if (!plPlaying)
+	    I_StartPass ();
+    }
+
+    // One tic's worth of mixing allowance, restored once a tic.  Whatever the
+    // device asked for beyond it during the last one is gone, and better gone
+    // than mixed.
+    plBurst = 0;
+
+    //
+    // A few seconds in, and every quarter minute after that, say what the
+    // sound side is actually doing.
+    //
+    // Four numbers, and between them they say where the silence is:
+    //
+    //	starts	how many times the game has asked for a sound effect.  Zero
+    //		means nothing further down matters -- the fault would be in
+    //		S_StartSound or the volume, not in any of this.
+    //	vol	the sfx volume in force, 0 to 15.  Zero explains everything.
+    //	peak	the loudest sample the mixer has produced, of 32767.  Zero
+    //		alongside a non-zero starts means the channel table or the
+    //		sample data is empty.
+    //	blocks	how many blocks the device has taken.  Climbing, alongside a
+    //		non-zero peak, means the samples left here in good order and
+    //		went missing somewhere past this program.
+    //
+    // Repeated because one line cannot tell a number that is stuck from a
+    // number that had not started yet, and a run has to be worth the trip.
+    //
+    if (playlistUp && plReports < PL_MAX_REPORTS
+	&& I_GetTime () - plStartTime > plNextReport)
+    {
+	plReports++;
+	plNextReport += 15*TICRATE;
+
+	I_ReportSound ();
     }
 }
 
@@ -889,6 +1105,10 @@ void I_ShutdownSound(void)
 
   if (playlistUp)
   {
+      // A last tally on the way out, so that even a run cut short by a quit
+      // in the first three seconds leaves something in the log.
+      I_ReportSound ();
+
       // Same rule as DART: stop the device before the memory it is reading
       // goes away.  The playlist branches for ever, so nothing else will
       // ever stop it.
@@ -898,8 +1118,6 @@ void I_ShutdownSound(void)
 
       playlistUp = false;
   }
-
-  I_FreePlaylistMemory ();
 
   if (dartBuffers)
   {
@@ -916,6 +1134,16 @@ void I_ShutdownSound(void)
       pMciSendCommand (mciDeviceID, MCI_CLOSE, MCI_WAIT, (PVOID)&gp, 0);
       mciDeviceID = 0;
   }
+
+  //
+  // The playlist memory goes back only now, AFTER the device has been closed.
+  //
+  // Stopping a device is not the same as it having finished with the memory
+  // it was given.  The driver holds the playlist and every block in it until
+  // the close, so freeing them in between hands back tiled memory that a 16
+  // bit driver still has an alias to -- and this one is not the sort to check.
+  //
+  I_FreePlaylistMemory ();
 
   if (sndMutex != NULLHANDLE)
   {
@@ -1376,6 +1604,28 @@ static ULONG PlBlockSize (ULONG chunk)
 }
 
 
+//
+// The MESSAGE_OPERATION elements are optional, and now off by default.
+//
+// They are how the driver says a block is free, and on paper that is the
+// right way round: the device knows where it has got to, and we can only
+// estimate.  In practice they are the one part of this arrangement that runs
+// at interrupt time inside a driver written in 1992, and they post into a PM
+// queue that nothing drains while a level is loading.  Three hard locks came
+// out of that path in a week.  Each fix addressed something real -- a missing
+// 16:16 alias, a restart that raced the DMA, a mixing backlog that pegged the
+// CPU -- and the machine still stopped, because none of them touched the
+// mechanism itself.
+//
+// Nothing actually needs it.  A device consumes a block in a time fixed by
+// its size and its byte rate, and the byte rate is no longer a guess: the log
+// measured it at 44100 against the 44100 we feed, a ratio of one.  The clock
+// therefore says where the playlist has got to as well as the driver would
+// have, and unlike the driver the clock cannot wedge anything.
+//
+// So the playlist is now DATA and BRANCH alone: the device is handed sound
+// and a loop, and is never asked to talk back.  -plmessages puts them back.
+//
 static void I_BuildPlaylist (ULONG chunk)
 {
     int		i;
@@ -1389,18 +1639,48 @@ static void I_BuildPlaylist (ULONG chunk)
 	playlist[e*4+3] = 0;
 	e++;
 
-	playlist[e*4+0] = MESSAGE_OPERATION;
-	playlist[e*4+1] = (ULONG)i;
-	playlist[e*4+2] = 0;
-	playlist[e*4+3] = 0;
-	e++;
+	if (plUseMessages)
+	{
+	    playlist[e*4+0] = MESSAGE_OPERATION;
+	    playlist[e*4+1] = (ULONG)i;
+	    playlist[e*4+2] = 0;
+	    playlist[e*4+3] = 0;
+	    e++;
+	}
     }
 
-    // Round and round.  Never EXIT: a stream that stops cannot easily be
-    // started again, and one that repeats the last thing it had merely
-    // stutters while the game catches up.
-    playlist[e*4+0] = BRANCH_OPERATION;
-    playlist[e*4+1] = 0;
+    //
+    // Round and round: BRANCH back to the first element for ever.  A stream
+    // that stops cannot easily be started again, whereas one that repeats the
+    // last thing it had merely stutters while the game catches up.
+    //
+    // -plexit ends the list instead, and exists only to answer one question.
+    // Everything optional has already been taken out of this playlist and the
+    // machine still stops; what remains is DATA, which is the driver reading
+    // our buffers, and BRANCH, which is the driver walking the list.  A list
+    // that ends separates them.  If a single pass plays -- a third of a
+    // second of sound and then silence, with the machine still standing --
+    // then DATA is fine and BRANCH is what kills it, and a LOOP_OPERATION is
+    // worth trying next.  If it locks even so, the driver cannot be given a
+    // buffer to DMA out of at all, and this interface is finished on this
+    // hardware.
+    //
+    // Either answer is worth having and neither needs a second run.
+    //
+    // It was run, and the list that ends survived.  So the list now always
+    // ends, and the looping form is what has to be asked for.
+    //
+    if (plChunked || M_CheckParm ("-plexit"))
+    {
+	playlist[e*4+0] = EXIT_OPERATION;
+	playlist[e*4+1] = 0;
+    }
+    else
+    {
+	playlist[e*4+0] = BRANCH_OPERATION;
+	playlist[e*4+1] = 0;
+    }
+
     playlist[e*4+2] = 0;
     playlist[e*4+3] = 0;
 }
@@ -1448,6 +1728,14 @@ static boolean I_InitPlaylist (void)
 	puts ("I_InitSound: no window yet; the playlist cannot be started.");
 	return false;
     }
+
+    // Whether to ask the driver to report its progress.  See I_BuildPlaylist.
+    plUseMessages = M_CheckParm ("-plmessages") != 0;
+
+    // One pass at a time unless a single looping list is asked for.  -plexit
+    // is the bare diagnostic: it plays one pass and never starts another, so
+    // it must not be re-armed either.
+    plChunked = !M_CheckParm ("-plbranch") && !M_CheckParm ("-plexit");
 
     //
     // One block of memory for all the buffers, at the largest size any
@@ -1612,16 +1900,51 @@ static boolean I_InitPlaylist (void)
     //
     // Last resort: open it and say nothing about the format.
     //
-    // A driver old enough not to know MCI_MIXSETUP may not know MCI_SET's
-    // wave parameters either, in which case it plays whatever its own default
-    // is.  For a Sound Blaster of this generation that default is the only
-    // thing the hardware does -- 11025 Hz, eight bit, mono -- so assuming it
-    // is a fair bet, and a wrong bet is audible rather than dangerous: the
-    // pitch would be off, and -noplaylist turns it back off again.
+    // A driver old enough not to know MCI_MIXSETUP does not know MCI_SET's
+    // wave parameters either, so it plays whatever its own default is and
+    // never tells us what that is.  The bet made here has to be right,
+    // because a wrong one is not merely out of tune: the device eats the
+    // blocks at its rate rather than ours, and the mixing that has to keep up
+    // with it is the most expensive thing this program does.
+    //
+    // The first bet was 11025 Hz eight bit mono, on the grounds that it is
+    // all a Sound Blaster of this generation does.  The logs said otherwise,
+    // twice and identically: 36 blocks consumed in the first three seconds
+    // where 4096 bytes of eight bit mono would be eight.  Four and a half
+    // times too fast, and four of that is exactly the ratio between one byte
+    // per frame and four -- sixteen bit stereo.  The remaining half is the
+    // four primed blocks, which come back immediately.  So the device's own
+    // default is sixteen bit stereo, and every byte we sent it was being read
+    // as half of a sixteen bit sample.
+    //
+    // That also explains the silence rather than the noise one would expect
+    // from a format error.  Eight bit PCM is unsigned, silence is 128, so a
+    // quiet passage is a run of 0x80 bytes -- which read as sixteen bit
+    // signed is a constant -32640.  A constant is a DC offset, and a DC
+    // offset moves a speaker cone once and then holds it there.  It is not a
+    // wrong sound; it is no sound.
+    //
+    // Guessing wrong here is expensive enough to be worth overriding by hand,
+    // hence -sndformat.  The index is into sndFormats above: 0 is 11025 Hz
+    // 16 bit stereo, 3 is 11025 Hz 8 bit mono, and I_FormatName prints them.
     //
     if (!got)
     {
-	I_TakeFormat (3);			// 11025 Hz, 8 bit, mono
+	int	assumed = 0;			// 11025 Hz, 16 bit, stereo
+	int	p	= M_CheckParm ("-sndformat");
+
+	if (p && p < myargc - 1)
+	{
+	    int	n = atoi (myargv[p+1]);
+
+	    if (n >= 0 && n < (int)NUM_SND_FORMATS)
+		assumed = n;
+	    else
+		printf ("I_InitSound: -sndformat %i is not one of the %i"
+			" formats; ignored.\n", n, (int)NUM_SND_FORMATS);
+	}
+
+	I_TakeFormat (assumed);
 
 	plBlockSize = PlBlockSize (dartChunk);
 	I_BuildPlaylist (plBlockSize);
@@ -1640,7 +1963,8 @@ static boolean I_InitPlaylist (void)
 
 	    printf ("I_InitSound: no format would be set; assuming the"
 		    " driver's own\n"
-		    "             11025 Hz 8 bit mono.\n");
+		    "             %s.  -sndformat N overrides.\n",
+		    I_FormatName (assumed));
 	}
     }
 
@@ -1688,13 +2012,54 @@ static boolean I_InitPlaylist (void)
 
     plNext	 = 0;
     plMessages	 = 0;
-    plComplained = false;
+
+    // With no MESSAGE elements in the list the device will never say a word,
+    // so the clock takes over from the first tic rather than after a second
+    // of waiting to be told something that is not coming.
+    //
+    // Chunked playback needs neither: each pass fills every block before it
+    // starts, and nothing is refilled while one is running.
+    plComplained = !plUseMessages;
+    plTimed	 = !plUseMessages && !plChunked;
+
+    plPlaying	 = false;
+    plPasses	 = 0;
+
+    plNextFill	 = NUM_PL_BUFFERS;		// 0..N-1 were just primed
+    plPeak	 = 0;
+    plReports	 = 0;
+    plBurst	 = 0;
+    plDropped	 = 0;
+    plNextReport = 3*TICRATE;
     plStartTime	 = I_GetTime ();
+    plLastMsg	 = plStartTime;
+
+    // How long the device takes to eat one block, and a whole pass of them.
+    {
+	int	bps = dartRate * (dartBits / 8) * dartChannels;
+
+	plBlockTics = bps > 0 ? (int)((plBlockSize * TICRATE) / bps) : 1;
+
+	if (plBlockTics < 1)
+	    plBlockTics = 1;
+
+	plPassTics = bps > 0
+		   ? (int)((plBlockSize * NUM_PL_BUFFERS * TICRATE) / bps)
+		   : 1;
+
+	if (plPassTics < 1)
+	    plPassTics = 1;
+    }
 
     memset (&pp, 0, sizeof(pp));
     pp.hwndCallback = os2_hwndClient;
 
-    rc = pMciSendCommand (mciDeviceID, MCI_PLAY, 0, (PVOID)&pp, 0);
+    // MCI_NOTIFY on a chunked pass, so the device says when it has finished
+    // and the next one can go in.  This is MM_MCINOTIFY for the play as a
+    // whole -- one message per pass -- and not the per-block MESSAGE elements
+    // that were taken out of the list; the two are unrelated mechanisms.
+    rc = pMciSendCommand (mciDeviceID, MCI_PLAY,
+			  plChunked ? MCI_NOTIFY : 0, (PVOID)&pp, 0);
 
     if (rc != MCIERR_SUCCESS)
     {
@@ -1703,8 +2068,227 @@ static boolean I_InitPlaylist (void)
 	return false;
     }
 
+    if (plChunked)
+    {
+	plPlaying = true;
+	plPassEnd = I_GetTime () + plPassTics;
+	plPasses  = 1;
+    }
+
     playlistUp = true;
     return true;
+}
+
+
+//
+// I_StartPass
+//
+// Fill every block and play the list once through.
+//
+// Safe to call only when no pass is in flight.  That is the whole point of
+// the arrangement: the device is not reading any of these buffers when they
+// are written, because it has told us -- or the clock has -- that it finished
+// with all of them.  Writing a buffer under a playing device is what took the
+// machine down the first time this was tried.
+//
+static boolean I_StartPass (void)
+{
+    MCI_PLAY_PARMS	pp;
+    ULONG		rc;
+    int			i;
+
+    for (i = 0; i < NUM_PL_BUFFERS; i++)
+	I_FillBlock ((ULONG)i);
+
+    memset (&pp, 0, sizeof(pp));
+    pp.hwndCallback = os2_hwndClient;
+
+    rc = pMciSendCommand (mciDeviceID, MCI_PLAY, MCI_NOTIFY, (PVOID)&pp, 0);
+
+    if (rc != MCIERR_SUCCESS)
+    {
+	// Stop rather than keep asking.  A device that has started refusing
+	// MCI_PLAY will refuse it thirty-five times a second otherwise, and
+	// each refusal is a call into the driver that just failed.
+	printf ("I_InitSound: pass %i would not start (%s); stopping the"
+		" playlist.\n", plPasses + 1, I_MciErrName (rc));
+	playlistUp = false;
+	return false;
+    }
+
+    plPlaying = true;
+    plPassEnd = I_GetTime () + plPassTics;
+    plPasses++;
+
+    return true;
+}
+
+
+//
+// I_OS2_PlaylistPlayDone
+//
+// MM_MCINOTIFY: a play command has finished.  The window procedure sends
+// every one of these here first, because the music sequencer is on the same
+// window and the two are told apart only by which device the message names.
+//
+// Returns true if it belonged to the playlist and has been dealt with.
+//
+boolean I_OS2_PlaylistPlayDone (ULONG deviceID)
+{
+    if (!playlistUp || !plChunked || !mciDeviceID)
+	return false;
+
+    if (deviceID != mciDeviceID)
+	return false;
+
+    plPlaying = false;
+    return true;
+}
+
+
+//
+// I_FillBlock
+//
+// One block, filled with as many mixes as it holds.
+//
+static void I_FillBlock (ULONG which)
+{
+    ULONG	off;
+
+    for (off = 0; off + dartChunk <= plBlockSize; off += dartChunk)
+    {
+	int	i;
+
+	I_MixBuffer ();
+
+	// How loud was that?  If the answer is always zero then the mixer is
+	// producing silence and no amount of work on the driver will help;
+	// if it is not, the samples are reaching the card and being lost
+	// somewhere beyond this program.  Nothing else distinguishes the two.
+	for (i = 0; i < SAMPLECOUNT*2; i++)
+	{
+	    int	v = mixbuffer[i];
+
+	    if (v < 0)
+		v = -v;
+
+	    if (v > plPeak)
+		plPeak = v;
+	}
+
+	I_ConvertMix (plBuffer[which] + off);
+    }
+}
+
+
+//
+// I_ReportSound
+//
+// One line saying where the silence is.  See I_SubmitSound for what the
+// numbers mean.
+//
+// It also names the pistol sample, because that one is always present in
+// every WAD id ever shipped -- getsfx falls back to it for anything missing
+// -- so a length of zero there means the sound lumps did not load at all and
+// nothing else in the line is worth reading.
+//
+static void I_ReportSound (void)
+{
+    printf ("I_InitSound: starts %i, vol %i, peak %i of 32767, blocks %i,"
+	    " dspistol %i bytes.\n",
+	    sfxStarts, snd_SfxVolume, plPeak,
+	    plUseMessages ? (int)plMessages : (int)plNextFill,
+	    lengths[sfx_pistol]);
+
+    //
+    // Chunked playback lives or dies on whether the passes keep coming, so
+    // say how many there have been and how many there should have been.
+    //
+    // Equal, or nearly, and the device is finishing each pass and being given
+    // the next: the sound is running as well as this arrangement allows.  Far
+    // short, and the passes are not being re-armed -- the notification is not
+    // arriving and the clock is carrying it alone, which is audible as long
+    // gaps.  Stuck at one, and the very first pass never ended.
+    //
+    if (plChunked)
+    {
+	int	elapsed = I_GetTime () - plStartTime;
+	int	expected = plPassTics > 0 ? elapsed / plPassTics : 0;
+
+	printf ("I_InitSound: %i passes played, about %i expected"
+		" (%i tics each).\n", plPasses, expected, plPassTics);
+	return;
+    }
+
+    // On the clock there is nothing to measure the device against -- the
+    // blocks above are the ones we decided to send, not ones it asked for --
+    // so the byte rate below would only be this program agreeing with itself.
+    if (!plUseMessages)
+	return;
+
+    //
+    // And what the device's real format is, which it would not say.
+    //
+    // The blocks it has taken and the time it took to take them give its byte
+    // rate directly, and the byte rate names the format: against the rate we
+    // are feeding it for, the ratio is 1 if the assumption was right, 4 if
+    // eight bit mono was offered to a sixteen bit stereo device, and so on
+    // through the table.  Whatever -sndformat is set to, this line says
+    // whether it was the right choice.
+    //
+    {
+	int	elapsed = I_GetTime () - plStartTime;
+	long	feeding = (long)dartRate * (dartBits / 8) * dartChannels;
+	long	taking;
+
+	if (elapsed > 0)
+	{
+	    taking = (long)((plMessages * plBlockSize * TICRATE) / elapsed);
+
+	    printf ("I_InitSound: feeding %ld bytes/sec, device taking about"
+		    " %ld.\n", feeding, taking);
+
+	    if (plDropped)
+		printf ("I_InitSound: %i block requests dropped to keep up.\n",
+			plDropped);
+	}
+    }
+}
+
+
+//
+// I_PlaylistTimedRefill
+//
+// Keep the blocks ahead of where the clock says the device has reached.
+//
+// Filled up to NUM_PL_BUFFERS-1 blocks ahead, which with four blocks means
+// the one being written is the one just played -- the furthest from the
+// needle it is possible to be.
+//
+static void I_PlaylistTimedRefill (void)
+{
+    int		elapsed = I_GetTime () - plStartTime;
+    ULONG	playing;
+    ULONG	target;
+    int		guard   = 0;
+
+    if (elapsed < 0)
+	return;
+
+    playing = (ULONG)(elapsed / plBlockTics);
+    target  = playing + NUM_PL_BUFFERS - 1;
+
+    // Never more than a full set in one go: if the game has been away for a
+    // while -- a level load -- there is no value in mixing audio for a
+    // stretch of time that has already been and gone.
+    while (plNextFill <= target && guard++ < NUM_PL_BUFFERS)
+    {
+	I_FillBlock (plNextFill % NUM_PL_BUFFERS);
+	plNextFill++;
+    }
+
+    if (plNextFill < playing)
+	plNextFill = playing;
 }
 
 
@@ -1737,16 +2321,46 @@ void I_OS2_PlaylistNotify (ULONG which)
 		" (first block requested).\n");
 
     plMessages++;
+    plLastMsg = I_GetTime ();
 
+    // The driver does talk to us, so the clock is not needed -- but only if we
+    // asked it to.  A stray message from a list with no MESSAGE elements in it
+    // must not be allowed to switch off the thing that is actually doing the
+    // work.
+    if (plUseMessages)
+	plTimed = false;
+    else
+	return;
+
+    //
+    // The safety valve.
+    //
+    // Mixing is by a wide margin the most expensive thing this program does
+    // that is not drawing, and every one of these messages asks for a block
+    // of it on the game's own thread.  So the cost of this function is set
+    // entirely by how fast the device asks -- which is the device's business,
+    // not ours, and on a driver that will not say what format it is playing
+    // it is not even something we know.
+    //
+    // Get that wrong on the slow side and the game merely stutters.  Get it
+    // wrong on the fast side and it cannot win: every frame arrives with more
+    // messages queued than the last frame managed to clear, the queue grows
+    // without bound, and the machine stops responding well enough to need the
+    // three-finger salute.  That happened twice, and both times it was read
+    // as a driver fault because it looked exactly like one.
+    //
+    // A backlog is also worthless.  Blocks queued behind the one the device
+    // is reading now will be overwritten before they are ever played, so
+    // mixing audio for them buys nothing at all.  Past a full set of buffers,
+    // the messages are counted and dropped.
+    //
+    if (plBurst++ >= NUM_PL_BUFFERS)
     {
-	ULONG	off;
-
-	for (off = 0; off + dartChunk <= plBlockSize; off += dartChunk)
-	{
-	    I_MixBuffer ();
-	    I_ConvertMix (plBuffer[which] + off);
-	}
+	plDropped++;
+	return;
     }
+
+    I_FillBlock (which);
 }
 
 
@@ -1803,25 +2417,46 @@ I_InitSound()
       I_ShutdownSound ();
 
       //
-      // The playlist path runs automatically, and did not always.
+      // The playlist path is off unless it is asked for, and that is a
+      // retreat rather than a design.
       //
-      // It was made opt-in after it locked a machine hard enough to need
-      // CHKDSK -- which was the right thing to do while the cause was
-      // unknown, and the wrong thing to keep once it was.  The cause was this
-      // file handing a 16 bit device driver memory with no 16:16 alias; the
-      // fix is OBJ_TILE, and it has since played for hours without incident.
+      // It ran automatically for a while.  On the Sound Blaster MCV driver it
+      // stops the machine dead -- not a trap in DOOM, the whole system, with
+      // CHKDSK to follow -- and it did so four times across a week of fixes
+      // that each corrected something genuinely wrong and none of which was
+      // the cause.  Memory with no 16:16 alias, a restart racing the DMA
+      // engine, a mixing backlog that pegged a 486, an eight bit mono
+      // assumption on a sixteen bit stereo device: all real, all fixed, all
+      // beside the point.  With the format measured and correct, the volume
+      // right, the mixer producing a healthy peak and the playlist reduced to
+      // DATA and BRANCH with nothing optional left in it, the machine still
+      // stopped -- and ran perfectly the moment -noplaylist was passed.
       //
-      // Leaving it opt-in after that would have meant a game with no sound
-      // effects for anyone who did not know to ask -- and nobody launching
-      // from the Workplace Shell passes command line switches.  DART is still
-      // tried first; this is only reached on hardware that has no other way
-      // of making a sound at all.
+      // What is left is that this driver cannot stream.  It has refused every
+      // interface it was offered: no DART, no MCI_SET of any wave parameter,
+      // no MCI_OPEN_ELEMENT.  A playlist is the last of them, and the
+      // evidence says it accepts one and then cannot honour it.
       //
-      // -noplaylist switches it off again.
+      // Defaulting to a path that reliably takes the machine down, on the
+      // chance that some other driver handles it better, is not a trade worth
+      // making: the cost of being wrong is a reboot and a file system check,
+      // and the benefit is sound effects.  So it waits to be asked.  Music
+      // goes through the sequencer and is unaffected either way.
       //
-      if (M_CheckParm ("-noplaylist"))
-	  printf ("I_InitSound: no DART, and the playlist fallback is"
-		  " switched off.\n");
+      // -playlist turns it on.  -noplaylist is still accepted, and still
+      // means off, so that anyone who put it in a WPS object or a batch file
+      // during all this keeps getting what they asked for.
+      //
+      // -plexit implies -playlist.  It shapes a playlist and is meaningless
+      // without one, so a switch that quietly did nothing on its own would be
+      // worse than useless here: the run would look like a result -- no lock,
+      // no sound -- when nothing had been tested at all.  It did exactly that
+      // once.
+      //
+      if ((!M_CheckParm ("-playlist") && !M_CheckParm ("-plexit"))
+	  || M_CheckParm ("-noplaylist"))
+	  printf ("I_InitSound: no DART; the playlist fallback is off"
+		  " (-playlist enables it).\n");
       else
       {
 	  //
@@ -1833,6 +2468,23 @@ I_InitSound()
 	  //
 	  printf ("I_InitSound: no DART; the playlist interface will be"
 		  " tried once the window is up.\n");
+
+	  //
+	  // Said out loud, every time, because of what it has cost.
+	  //
+	  // On the driver this was developed against, this path has stopped
+	  // the machine five times -- once past the reach of Ctrl-Alt-Del,
+	  // needing the power switch, with the file system damaged after it.
+	  // Anyone reading a log from a machine that did not come back should
+	  // find the warning in it rather than have to be told.
+	  //
+	  printf ("I_InitSound: WARNING -- on a driver that cannot stream,"
+		  " this can lock the\n"
+		  "             machine hard enough to need the power"
+		  " switch.  -noplaylist\n"
+		  "             avoids it; music is unaffected either"
+		  " way.\n");
+
 	  playlistPending = true;
       }
   }

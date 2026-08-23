@@ -45,6 +45,8 @@ program" below.  The configuration is written to DEFAULT.CFG beside the WADs.
 Command line options, beyond the ones every DOOM has:
 
     -iwad <file>    Use this file as the game data, whatever it is called.
+                    Also skips the "which game?" window when a directory
+                    holds more than one.
     -2, -3          Open the window at two or three times its normal size.
                     The window can be resized freely afterwards regardless.
     -stretch        Let the window be any shape, rather than holding it to
@@ -55,6 +57,12 @@ Command line options, beyond the ones every DOOM has:
                     is captured and hidden whenever the window is active.
     -nosound        Do not open the audio device at all.
     -nomusic        Sound effects, but no music.
+    -playlist       Try the MMPM/2 playlist interface on a card whose driver
+                    has no DART support.  Off by default.  Read "Sound
+                    effects need DART" below before using it.
+    -sndformat <n>  Override the format assumed for a driver that will not
+                    declare one.  0 is 11025 Hz 16 bit stereo, 3 is 11025 Hz
+                    8 bit mono.  Only affects -playlist.
     -mb <n>         Zone heap size in megabytes.  Default 6.  DOS DOOM had
                     this; the Linux build did not.
 
@@ -86,11 +94,48 @@ It looks in DOOMWADDIR, then the current directory, then the directory
 DOOM.EXE is in.  That last one matters: a program started from the Workplace
 Shell does not necessarily have its own directory as the current one, so a
 DOOM.EXE sitting happily beside its WAD could otherwise still fail to find it.
-Failing all of those it will take any *.WAD in those directories that turns
-out to be an IWAD, and if there is genuinely nothing it says where it looked.
+It also takes any other *.WAD in those directories that turns out to be an
+IWAD, and if there is genuinely nothing it says where it looked.
 
 The identification is in D_OS2IWD.C and is the one part of this port that has
 been tested directly: see "What has been tested" below.
+
+
+When there is more than one game
+--------------------------------
+
+Keeping DOOM, DOOM II, TNT and Plutonia in one directory is the ordinary way
+to have them, and the released code deals with that by taking the first name
+off its list and playing that.  Which game starts is decided by a preference
+order written in 1993, and the only way to overrule it is to rename files.
+
+This port collects all of them instead of stopping at the first, and if there
+is more than one it asks:
+
+    More than one game was found.  Which one would you like to play?
+
+      ( ) The Ultimate DOOM (4 episodes)          C:\GAMES\DOOM\DOOM.WAD
+      (o) DOOM II: Hell on Earth                  C:\GAMES\DOOM\DOOM2.WAD
+      ( ) Final DOOM: TNT Evilution               C:\GAMES\DOOM\TNT.WAD
+      ( ) Final DOOM: The Plutonia Experiment     C:\GAMES\DOOM\PLUTONIA.WAD
+
+The one already selected is whichever the old order would have started, so
+pressing Enter keeps doing what this program has always done.  Arrow keys move
+between them, a double click plays one outright, and Quit or the close box
+exits without starting a game -- that is an answer, not an error, and it goes
+quietly to the log rather than into a message box.
+
+-iwad names a file outright and skips the question entirely, which is what to
+put in a Workplace Shell object or a batch file for a machine that should
+always start the same game.
+
+One caveat on the names.  DOOM, the registered game, Ultimate DOOM and the
+shareware episode are told apart by what is inside them and cannot be wrong.
+DOOM II, TNT and Plutonia cannot: they are structurally identical -- MAP01 to
+MAP32 and nothing to separate them -- so for those three the name comes from
+the file name, and a TNT.WAD renamed to DOOM2.WAD will be offered as DOOM II.
+That is why the window shows the full path beside every name: where the title
+is a guess, the path is not.
 
 
 How it works
@@ -278,6 +323,74 @@ deliberately small.  In full:
   i_os2mus.c  New: MUS to MIDI, and the MCI sequencer.
 
 Everything else is byte-identical to the release.
+
+
+Sound effects need DART
+-----------------------
+
+Music and sound effects come from two different places, and only one of them
+is fussy about the driver.
+
+Music is MIDI.  The MUS score in the WAD is converted and handed to the MMPM/2
+sequencer, which plays it on the card's synthesiser.  Every driver supports
+this, and music works on hardware where nothing else does.
+
+Sound effects are different: DOOM mixes them itself, sample by sample, and
+needs somewhere to put a continuous stream of PCM.  The interface for that is
+DART, and where DART exists this works well.  Where it does not, there is
+nothing underneath it worth relying on.
+
+The port can fall back to the older MMPM/2 playlist interface, and -playlist
+asks it to.  It is off by default because on at least one real driver -- the
+IBM Sound Blaster MCV driver, as used by the ReSound New Wave -- it stops the
+whole machine.  Not a trap in DOOM: a hard lock, needing the power switch,
+with a file system check to follow.
+
+That was chased a long way.  Four separate faults were found and fixed on the
+way to it, every one of them real: memory handed to a 16-bit driver without a
+16:16 alias, a stream restart that raced the DMA engine, a mixing backlog that
+pegged the processor, and an eight bit mono assumption made about a device
+that was playing sixteen bit stereo.  With all four corrected -- the format
+measured rather than guessed, the mixer producing a healthy signal, and the
+playlist stripped to nothing but the buffers and the loop -- the machine still
+stopped, and ran perfectly the moment -playlist was left off.
+
+Then the shape of the failure was pinned down, or so it looked.  A playlist
+ending in EXIT_OPERATION plays its blocks once and stops, and that survives;
+the same list ending in BRANCH_OPERATION, looping, does not.  The obvious
+reading was that looping is the problem, so the code was changed to play one
+complete pass at a time and start the next when the device reported the last
+one finished -- no looping anywhere, every play ending properly.
+
+That locked the machine harder than anything before it: Ctrl-Alt-Del would not
+answer, the power switch was the only way out, and the file system needed
+repair afterwards.
+
+So the reading was wrong, and it is worth writing down why, because it is the
+kind of mistake that is easy to repeat.  The EXIT test did not isolate looping.
+It isolated a *small, bounded amount of playback* -- four blocks, a third of a
+second, and then nothing.  Both of the arrangements that fail are ones that
+keep the device playing indefinitely; the one that survives is the one that
+barely plays at all.  The common ingredient is sustained streaming itself, not
+the opcode used to sustain it.
+
+That makes it final.  Every way of streaming audio comes down to feeding a
+device continuously, and this driver cannot be fed continuously by any route
+it will accept.  There is no restructuring left to try, because the failing
+ingredient is the thing all the structures have in common.
+
+This driver has refused every interface it was offered: no DART, no MCI_SET of
+any wave parameter, no MCI_OPEN_ELEMENT.  A driver that says no to all of
+those and yes to this one was probably never going to mean it.
+
+If your card has a DART-capable driver, none of this applies and sound effects
+work without any switch at all.
+
+If it does not, then on this hardware -playlist is not a switch worth trying.
+It has cost five reboots, one of them a hard power-off with file system damage
+following.  It is kept because a different driver may well handle it properly,
+not because it is expected to work here.  If you try it anyway: nothing else
+running, nothing unsaved, and be ready to reach for the power switch.
 
 
 What has been tested

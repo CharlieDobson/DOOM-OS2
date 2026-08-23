@@ -35,6 +35,20 @@
 //	the macros in doomdef.h, which is why doomdef.h is the one DOOM header
 //	it does not include -- the definitions below must be the real ones.
 //
+//	It writes through the file system rather than through the C library.
+//	A log exists to describe a run that ended badly, and the worst endings
+//	take the machine with them: twice now a trap has locked OS/2 hard
+//	enough that the last of the log was still sitting in the disk cache,
+//	and CHKDSK handed back an empty file afterwards.  fflush only reaches
+//	that cache.  DosWrite on a handle opened WRITE_THROUGH, followed by
+//	DosResetBuffer so the directory entry follows the data out, reaches the
+//	platter -- so every line is on disk before the line that might take the
+//	machine down is even reached.
+//
+//	That is slow, and deliberately so.  It costs a disk write per line of
+//	startup text, which is a few dozen writes across a second or two, and
+//	it buys the only thing the file is for.
+//
 //-----------------------------------------------------------------------------
 
 #include <stdio.h>
@@ -42,13 +56,15 @@
 #include <string.h>
 #include <time.h>
 
+#define INCL_DOSFILEMGR
 #include "os2doom.h"
 
 #include "doomtype.h"
 #include "m_argv.h"
 
 
-static FILE*	logfile		= NULL;
+static HFILE	loghandle	= (HFILE)0;
+static boolean	logopen		= false;
 static boolean	logtried	= false;
 
 
@@ -61,7 +77,9 @@ static boolean	logtried	= false;
 //
 void I_OS2_LogInit (void)
 {
+    ULONG	action = 0;
     time_t	now;
+    char	line[128];
 
     if (logtried)
 	return;
@@ -71,15 +89,39 @@ void I_OS2_LogInit (void)
     if (M_CheckParm ("-nolog"))
 	return;
 
-    logfile = fopen ("DOOM.LOG", "w");
-    if (!logfile)
+    //
+    // WRITE_THROUGH is the entire reason for opening it this way rather than
+    // with fopen.  DENYNONE is so the file can be read from another program
+    // while the game is still running, which is how a hang gets looked at at
+    // all.
+    //
+    if (DosOpen ((PSZ)"DOOM.LOG", &loghandle, &action, 0, FILE_NORMAL,
+		 OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS,
+		 OPEN_FLAGS_WRITE_THROUGH | OPEN_FLAGS_FAIL_ON_ERROR
+		 | OPEN_FLAGS_NOINHERIT | OPEN_SHARE_DENYNONE
+		 | OPEN_ACCESS_WRITEONLY,
+		 NULL) != NO_ERROR)
 	return;
 
+    logopen = true;
+
     now = time (NULL);
-    fprintf (logfile, "DOOM for OS/2 -- startup transcript, %s", ctime (&now));
-    fprintf (logfile, "----------------------------------------"
-		      "---------------------------------------\n");
-    fflush (logfile);
+    sprintf (line, "DOOM for OS/2 -- startup transcript, %s", ctime (&now));
+    I_OS2_LogWrite (line);
+
+    //
+    // When this executable was built, which matters more than it looks.
+    //
+    // The game is built on one machine and run on another, and a log is read
+    // back on the first.  Nothing in the transcript otherwise says which
+    // build produced it, so a stale copy on the test machine -- or a log that
+    // did not make the return trip -- reads as a genuine result, and a test
+    // that never ran gets acted on.  That has happened twice.
+    //
+    sprintf (line, "Built %s %s\n", __DATE__, __TIME__);
+    I_OS2_LogWrite (line);
+    I_OS2_LogWrite ("----------------------------------------"
+		    "---------------------------------------\n");
 }
 
 
@@ -88,10 +130,10 @@ void I_OS2_LogInit (void)
 //
 void I_OS2_LogShutdown (void)
 {
-    if (logfile)
+    if (logopen)
     {
-	fclose (logfile);
-	logfile = NULL;
+	logopen = false;
+	DosClose (loghandle);
     }
 }
 
@@ -99,17 +141,35 @@ void I_OS2_LogShutdown (void)
 //
 // I_OS2_LogWrite
 //
-// One piece of already-formatted text, to the log alone.  Flushed every time:
-// the whole value of the file is that it survives whatever happens next, and
-// what happens next may well be a trap.
+// One piece of already-formatted text, to the log alone.
+//
+// Written straight through to the disk, and the file's buffers reset
+// afterwards so the directory entry follows the data out.  By the time the
+// next line runs, this one is on the platter -- which is the whole value of
+// the file, because what happens next may well be a trap.
 //
 void I_OS2_LogWrite (const char* text)
 {
-    if (logfile)
+    ULONG	written;
+    ULONG	len;
+
+    if (!logopen)
+	return;
+
+    len = (ULONG)strlen (text);
+    if (!len)
+	return;
+
+    if (DosWrite (loghandle, (PVOID)text, len, &written) != NO_ERROR)
     {
-	fputs (text, logfile);
-	fflush (logfile);
+	// A log that has begun failing -- a full disk, most likely -- is not
+	// worth retrying on every line for the rest of the run.
+	logopen = false;
+	DosClose (loghandle);
+	return;
     }
+
+    DosResetBuffer (loghandle);
 }
 
 

@@ -30,7 +30,7 @@ CFLAGS = -bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -j -zq -w1 -e25 -i=$(SRC)
 STACK = 1048576
 
 PLATFORM = i_main.obj i_system.obj i_video.obj i_sound.obj i_net.obj &
-           d_os2iwd.obj i_os2mus.obj i_os2log.obj i_os2load.obj
+           d_os2iwd.obj i_os2mus.obj i_os2log.obj i_os2load.obj i_os2wad.obj
 
 ENGINE = doomdef.obj doomstat.obj dstrings.obj tables.obj f_finale.obj &
          f_wipe.obj d_main.obj d_net.obj d_items.obj g_game.obj m_menu.obj &

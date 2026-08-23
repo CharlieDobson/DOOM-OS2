@@ -75,6 +75,12 @@ rcsid[] = "$Id:$";
 static char*	searchdir[MAX_SEARCH_DIRS];
 static int	numsearchdirs;
 
+// Every IWAD the search turned up, in the order it found them -- which is the
+// released code's order of preference first, so iwads[0] is the one this
+// program has always started, and anything else afterwards.
+static os2iwad_t	iwads[MAX_IWAD_CHOICES];
+static int		numiwads;
+
 
 //
 // LumpNameIs
@@ -233,50 +239,145 @@ static GameMission_t MissionFromName (char *path)
 
 
 //
-// D_TryIwad
+// D_DescribeIwad
 //
-// If this file is an IWAD, adopt it: set the game mode and mission, and put
-// it at the head of the WAD list.
+// What to call this game somewhere a person will read it.
 //
-static boolean D_TryIwad (char *path)
+// The names are the ones off the boxes rather than the engine's own
+// vocabulary: someone choosing between two files knows "The Ultimate DOOM"
+// and would have to stop and think about "retail".  Episode counts are kept
+// for the two that are otherwise easy to mistake for each other.
+//
+static void D_DescribeIwad (GameMode_t mode, GameMission_t mission, char *out)
 {
-    GameMode_t	mode;
-    char*	copy;
+    switch (mode)
+    {
+      case shareware:
+	strcpy (out, "DOOM (shareware, 1 episode)");
+	break;
+
+      case registered:
+	strcpy (out, "DOOM (registered, 3 episodes)");
+	break;
+
+      case retail:
+	strcpy (out, "The Ultimate DOOM (4 episodes)");
+	break;
+
+      case commercial:
+	if (mission == pack_tnt)
+	    strcpy (out, "Final DOOM: TNT Evilution");
+	else if (mission == pack_plut)
+	    strcpy (out, "Final DOOM: The Plutonia Experiment");
+	else
+	    strcpy (out, "DOOM II: Hell on Earth");
+	break;
+
+      default:
+	strcpy (out, "an unrecognised DOOM WAD");
+	break;
+    }
+}
+
+
+//
+// D_IdentifyIwad
+//
+// Reads the file and works out which game it holds.  Changes nothing.
+//
+static boolean D_IdentifyIwad (char *path, os2iwad_t *out)
+{
+    GameMode_t		mode;
+    GameMission_t	mission;
+
+    if (strlen (path) >= CCHMAXPATH)
+	return false;
 
     if (!D_ReadIwadMode (path, &mode))
 	return false;
 
-    gamemode = mode;
+    mission = (mode == commercial) ? MissionFromName (path) : doom;
 
-    if (mode == commercial)
-	gamemission = MissionFromName (path);
-    else
-	gamemission = doom;
+    strcpy (out->path, path);
+    out->mode	 = (int)mode;
+    out->mission = (int)mission;
+
+    D_DescribeIwad (mode, mission, out->name);
+
+    return true;
+}
+
+
+//
+// D_AddCandidate
+//
+// Identify the file and add it to the list, unless it is not an IWAD or is
+// already on it.
+//
+// The same file is very often reached twice: once as one of the seven names
+// the released code knows, and again by the sweep for anything else that
+// turns out to be an IWAD.  Both build their paths out of the same directory
+// string in the same shape, so comparing whole paths settles it.
+//
+static boolean D_AddCandidate (char *path)
+{
+    int		i;
+
+    if (numiwads >= MAX_IWAD_CHOICES)
+	return false;
+
+    for (i = 0; i < numiwads; i++)
+	if (!stricmp (iwads[i].path, path))
+	    return false;
+
+    if (!D_IdentifyIwad (path, &iwads[numiwads]))
+	return false;
+
+    numiwads++;
+    return true;
+}
+
+
+//
+// D_AdoptIwad
+//
+// Play this one: set the game mode and mission, and put the file at the head
+// of the WAD list.
+//
+static void D_AdoptIwad (os2iwad_t *w)
+{
+    char*	copy;
+
+    gamemode	= (GameMode_t)w->mode;
+    gamemission	= (GameMission_t)w->mission;
 
     // D_AddFile keeps the pointer it is given, so it has to outlive this
-    // function -- the callers below build their paths in a scratch buffer.
-    copy = (char *) malloc (strlen(path) + 1);
+    // function -- the search builds its paths in a scratch buffer.
+    copy = (char *) malloc (strlen(w->path) + 1);
     if (!copy)
-	I_Error ("D_TryIwad: out of memory");
-    strcpy (copy, path);
+	I_Error ("D_AdoptIwad: out of memory");
+    strcpy (copy, w->path);
 
     D_AddFile (copy);
 
-    printf ("IWAD: %s (", copy);
-    switch (mode)
-    {
-      case shareware:	printf ("DOOM shareware, episode 1");	break;
-      case registered:	printf ("DOOM registered, 3 episodes");	break;
-      case retail:	printf ("DOOM retail, 4 episodes");	break;
-      case commercial:
-	if (gamemission == pack_tnt)		printf ("TNT: Evilution");
-	else if (gamemission == pack_plut)	printf ("Plutonia");
-	else					printf ("DOOM II");
-	break;
-      default:		printf ("?");				break;
-    }
-    printf (")\n");
+    printf ("IWAD: %s (%s)\n", copy, w->name);
+}
 
+
+//
+// D_TryIwad
+//
+// Identify one named file and play it if it is an IWAD.  Only -iwad uses
+// this: it names a file outright, so there is nothing to choose between.
+//
+static boolean D_TryIwad (char *path)
+{
+    os2iwad_t	w;
+
+    if (!D_IdentifyIwad (path, &w))
+	return false;
+
+    D_AdoptIwad (&w);
     return true;
 }
 
@@ -346,13 +447,16 @@ static void BuildSearchDirs (void)
 
 
 //
-// ScanDirForIwad
+// ScanDirForIwads
 //
-// Last resort: any *.WAD in the directory that turns out to be an IWAD.
+// Every *.WAD in the directory that turns out to be an IWAD.
+//
 // This is what finds a perfectly good IWAD that happens to be called
-// something nobody anticipated.
+// something nobody anticipated -- and, now that the whole list is collected
+// rather than the first match taken, what makes sure a directory holding
+// DOOM2.WAD and MYDOOM.WAD offers both.
 //
-static boolean ScanDirForIwad (char *dir)
+static void ScanDirForIwads (char *dir)
 {
     HDIR		hdir = HDIR_CREATE;
     FILEFINDBUF3	found;
@@ -361,7 +465,7 @@ static boolean ScanDirForIwad (char *dir)
     char		path[CCHMAXPATH];
 
     if (strlen(dir) + 8 >= CCHMAXPATH)
-	return false;
+	return;
 
     sprintf (pattern, "%s/*.wad", dir);
 
@@ -369,19 +473,14 @@ static boolean ScanDirForIwad (char *dir)
 		      FILE_NORMAL | FILE_READONLY | FILE_ARCHIVED,
 		      &found, sizeof(found), &count,
 		      FIL_STANDARD) != NO_ERROR)
-	return false;
+	return;
 
     do
     {
 	if (strlen(dir) + 1 + strlen(found.achName) < CCHMAXPATH)
 	{
 	    sprintf (path, "%s/%s", dir, found.achName);
-
-	    if (D_TryIwad (path))
-	    {
-		DosFindClose (hdir);
-		return true;
-	    }
+	    D_AddCandidate (path);
 	}
 
 	count = 1;
@@ -389,7 +488,6 @@ static boolean ScanDirForIwad (char *dir)
     while (DosFindNext (hdir, &found, sizeof(found), &count) == NO_ERROR);
 
     DosFindClose (hdir);
-    return false;
 }
 
 
@@ -441,6 +539,10 @@ boolean D_OS2FindIWAD (void)
     //
     // The known names, in every search directory.
     //
+    // These go in first and in the released code's own order, so that
+    // iwads[0] is whatever this program would have started before there was
+    // any choosing to do.  That is what the window opens on.
+    //
     for (d = 0; d < numsearchdirs; d++)
     {
 	for (n = 0; knownnames[n]; n++)
@@ -450,8 +552,7 @@ boolean D_OS2FindIWAD (void)
 
 	    sprintf (path, "%s/%s", searchdir[d], knownnames[n]);
 
-	    if (D_TryIwad (path))
-		return true;
+	    D_AddCandidate (path);
 	}
     }
 
@@ -459,8 +560,48 @@ boolean D_OS2FindIWAD (void)
     // Anything else that turns out to be an IWAD.
     //
     for (d = 0; d < numsearchdirs; d++)
-	if (ScanDirForIwad (searchdir[d]))
-	    return true;
+	ScanDirForIwads (searchdir[d]);
+
+    //
+    // One game: play it, and say nothing.  Asking a question with a single
+    // answer is not a courtesy.
+    //
+    if (numiwads == 1)
+    {
+	D_AdoptIwad (&iwads[0]);
+	return true;
+    }
+
+    //
+    // Several: ask.
+    //
+    if (numiwads > 1)
+    {
+	int	pick;
+
+	printf ("Found %i games:\n", numiwads);
+	for (d = 0; d < numiwads; d++)
+	    printf ("    %s (%s)\n", iwads[d].path, iwads[d].name);
+
+	pick = I_OS2_ChooseIwad (iwads, numiwads, 0);
+
+	if (pick < 0)
+	{
+	    // They closed the window rather than picking.  That is an answer,
+	    // and it is not an error: no message box, no "DOOM aborted", just
+	    // the log saying so and a clean exit.
+	    printf ("No game chosen; quitting.\n");
+
+	    I_OS2_LoadWindowClose ();
+	    I_OS2_LogShutdown ();
+
+	    fflush (NULL);
+	    DosExit (EXIT_PROCESS, 0);
+	}
+
+	D_AdoptIwad (&iwads[pick]);
+	return true;
+    }
 
     //
     // Nothing.  The particulars go to the log; the screen gets a sentence.

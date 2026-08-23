@@ -175,6 +175,62 @@ void I_OS2_PlaylistNotify (ULONG which);
 
 
 //
+// Choosing between IWADs, in I_OS2WAD.C.
+//
+// A directory can easily hold several games at once -- DOOM.WAD, DOOM2.WAD,
+// TNT.WAD and PLUTONIA.WAD side by side is a perfectly ordinary way to keep
+// them -- and the released code simply takes the first name off a list and
+// plays that one, with no way to say otherwise except renaming files.
+//
+// So when the search turns up more than one, the player is asked.  D_OS2IWD.C
+// finds and identifies them; this only puts the question.
+//
+#define MAX_IWAD_CHOICES	12
+
+typedef struct
+{
+    char	path[CCHMAXPATH];	// as it will be opened
+    char	name[64];		// "The Ultimate DOOM", and so on
+    int		mode;			// GameMode_t
+    int		mission;		// GameMission_t
+} os2iwad_t;
+
+//
+// The two enumerated types are carried as plain ints on purpose.  Their
+// definitions live in doomdef.h and doomstat.h, which this header is included
+// alongside but never by -- I_VIDEO.C and I_SOUND.C both take pains to keep
+// the DOOM headers and the OS/2 ones apart, because os2medef.h declares a
+// type called VERSION and doomdef.h has an enumerator of the same name.  One
+// struct is not worth reopening that.
+//
+
+//
+// I_OS2_ChooseIwad
+//
+// Puts up the list and blocks until the player picks one.  Returns the index
+// chosen, or -1 if they would rather not play after all.
+//
+// "preferred" is the one selected when the window opens: the caller passes
+// whichever the old first-match-wins order would have started, so that simply
+// pressing Enter keeps doing what this program has always done.
+//
+int I_OS2_ChooseIwad (os2iwad_t *list, int count, int preferred);
+
+
+//
+// I_OS2_PlaylistPlayDone
+//
+// Called from the window procedure when MM_MCINOTIFY arrives, carrying the id
+// of the device whose play has finished.  The music sequencer reports to the
+// same window, so this is offered the message first and returns true only if
+// the device named is the playlist's -- in which case the next pass goes in.
+// Returns false for anything else, including on machines that never opened a
+// playlist at all, and the message goes to the music instead.
+//
+boolean I_OS2_PlaylistPlayDone (ULONG deviceID);
+
+
+//
 // The startup transcript, in I_OS2LOG.C.  LogInit opens DOOM.LOG and must be
 // called before anything prints; LogWrite puts already-formatted text into it
 // without going near stdout, which is what I_Error wants on its way out.

@@ -887,7 +887,13 @@ static MRESULT EXPENTRY DoomWndProcInner (HWND hwnd, ULONG msg,
 	return (MRESULT)FALSE;
 
       //
-      // MMPM/2 has finished playing the music.
+      // MMPM/2 has finished playing something.
+      //
+      // Two devices report here: the music sequencer, and -- on a card with
+      // no DART, being fed one playlist pass at a time -- the waveaudio
+      // device.  Nothing distinguishes the messages except the device id they
+      // carry, which is the low half of mp2.  The playlist is offered it
+      // first and takes it only if it is genuinely its own.
       //
       // The value is spelled out rather than pulled in from <os2me.h>: that
       // header brings os2medef.h with it, which declares a type called
@@ -895,7 +901,8 @@ static MRESULT EXPENTRY DoomWndProcInner (HWND hwnd, ULONG msg,
       // I_SOUND.C and I_OS2MUS.C have to deal with that; there is no reason
       // for this file to as well, for one constant.
       case 0x0500:				// MM_MCINOTIFY
-	I_OS2_MusicNotify (SHORT1FROMMP(mp1));
+	if (!I_OS2_PlaylistPlayDone ((ULONG)SHORT1FROMMP(mp2)))
+	    I_OS2_MusicNotify (SHORT1FROMMP(mp1));
 	return 0;
 
       //

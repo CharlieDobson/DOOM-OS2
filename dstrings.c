@@ -39,28 +39,42 @@ char* endmsg[NUM_QUITMESSAGES+1]=
   QUITMSG,
   "please don't leave, there's more\ndemons to toast!",
   "let's beat it -- this is turning\ninto a bloodbath!",
-  "i wouldn't leave if i were you.\ndos is much worse.",
-  "you're trying to say you like dos\nbetter than me, right?",
+  // These three said "dos" and "the dos prompt", which is not where anyone
+  // playing this ends up.
+  "i wouldn't leave if i were you.\nos/2 is much worse.",
+  "you're trying to say you like os/2\nbetter than me, right?",
   "don't leave yet -- there's a\ndemon around that corner!",
   "ya know, next time you come in here\ni'm gonna toast ya.",
-  "go ahead and leave. see if i care."
+
+  // The comma at the end of the line below is not in the released source, and
+  // leaving it out was a bug: two adjacent string literals in C are one
+  // string, so this message and the first DOOM II one were quietly glued into
+  // a single entry that ran off the side of the box.  The same thing happened
+  // again at the end of the DOOM II block.  Both are commas now.
+  "go ahead and leave. see if i care.",
 
   // QuitDOOM II messages
   "you want to quit?\nthen, thou hast lost an eighth!",
-  "don't go now, there's a \ndimensional shambler waiting\nat the dos prompt!",
+  "don't go now, there's a \ndimensional shambler waiting\nfor you out in os/2!",
   "get outta here and go back\nto your boring programs.",
   "if i were your boss, i'd \n deathmatch ya in a minute!",
   "look, bud. you leave now\nand you forfeit your body count!",
   "just leave. when you come\nback, i'll be waiting with a bat.",
-  "you're lucky i don't smack\nyou for thinking about leaving."
+  "you're lucky i don't smack\nyou for thinking about leaving.",
 
   // FinalDOOM?
-  "fuck you, pussy!\nget the fuck out!",
-  "you quit and i'll jizz\nin your cystholes!",
-  "if you leave, i'll make\nthe lord drink my jizz.",
-  "hey, ron! can we say\n'fuck' in the game?",
+  //
+  // The six that stood here were the crude ones, and they are replaced
+  // rather than deleted: the table is indexed by gametic modulo a count, so
+  // taking entries out would have meant changing the count in DSTRINGS.H to
+  // match, and a table with a hole in it is a worse thing to leave behind
+  // than a table with different jokes in it.  Same voice, same shape.
+  "go on then, coward!\nsee if i care!",
+  "quit, and every demon here\ngets to keep the change.",
+  "if you leave, i'm telling\nthe cyberdemon you said that.",
+  "hey, ron! can we say\n'darn' in the game?",
   "i'd leave: this is just\nmore monsters and levels.\nwhat a load.",
-  "suck it down, asshole!\nyou're a fucking wimp!",
+  "is that it? i've seen\nimps with more backbone.",
   "don't quit now! we're \nstill spending your money!",
 
   // Internal debug. Different style, too.
