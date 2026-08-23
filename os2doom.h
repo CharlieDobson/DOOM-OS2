@@ -31,6 +31,7 @@
 #define INCL_DOSMODULEMGR
 #define INCL_DOSSEMAPHORES
 #define INCL_DOSERRORS
+#define INCL_DOSEXCEPTIONS
 #include <os2.h>
 
 #include "doomtype.h"
@@ -92,6 +93,92 @@ void I_OS2_PumpMessages (void);
 // Falls back to stderr alone when PM is not initialised yet.
 //
 void I_OS2_ErrorBox (char *text);
+
+
+//
+// I_OS2_MciEntry
+//
+// mciSendCommand, the one door into MMPM/2, resolved by name out of MDM.DLL
+// on first use and remembered.  Returns NULL on a machine with no multimedia
+// support installed, which is a perfectly ordinary thing for an OS/2 machine
+// to be.
+//
+// It is loaded rather than imported for the same reason DIVE is: a DOOM.EXE
+// that imported MDM.DLL would refuse to load at all without it, instead of
+// simply running quietly.  Both the sound (I_SOUND.C) and the music
+// (I_OS2MUS.C) go through here, so the library is loaded once however many
+// of them end up being used.
+//
+typedef ULONG (APIENTRY *PFNMCISENDCOMMAND)(USHORT, USHORT, ULONG,
+					    PVOID, USHORT);
+
+PFNMCISENDCOMMAND I_OS2_MciEntry (void);
+
+
+//
+// D_OS2FindIWAD
+//
+// Finds the game data and works out which game it is, by reading the WAD
+// rather than by trusting its file name.  Called from IdentifyVersion.
+// Lives in D_OS2IWD.C; declared here because it is part of the port rather
+// than part of the engine.
+//
+// Returns true once an IWAD has been adopted.  Does not return at all if
+// there is none -- it reports where it looked and stops.
+//
+boolean D_OS2FindIWAD (void);
+
+
+//
+// I_OS2_ExceptionHandler
+//
+// Registered on the main thread by main(), in I_MAIN.C.
+//
+// Its one job is to put the mouse pointer back.  While the game is running
+// the pointer is hidden -- WinShowPointer(FALSE) -- and that is a system
+// wide, reference counted state: if DOOM traps while holding it hidden, the
+// desktop is left with no pointer at all and the user has to reboot to get
+// one back.  That is a rotten thing to do to somebody over a bug in a game.
+//
+// It never tries to handle the fault.  It always returns
+// XCPT_CONTINUE_SEARCH, so OS/2 goes on to produce its usual popup and
+// process dump exactly as it would have.
+//
+ULONG APIENTRY I_OS2_ExceptionHandler (PEXCEPTIONREPORTRECORD	 report,
+				       PEXCEPTIONREGISTRATIONRECORD reg,
+				       PCONTEXTRECORD		 ctx,
+				       PVOID			 dummy);
+
+
+//
+// I_OS2_MusicNotify
+//
+// Called from the window procedure when MM_MCINOTIFY arrives, carrying the
+// status MMPM/2 reported.  Defined in I_OS2MUS.C, which uses it to start a
+// looping song again when it reaches the end.
+//
+void I_OS2_MusicNotify (ULONG status);
+
+
+//
+// I_OS2_PlaylistNotify
+//
+// Called from the window procedure when MM_MCIPLAYLISTMESSAGE arrives,
+// carrying the number of the sound block the device has finished with.
+// Defined in I_SOUND.C, which mixes the next one into it.  Only used on
+// machines whose audio driver has no DART.
+//
+void I_OS2_PlaylistNotify (ULONG which);
+
+
+//
+// The startup transcript, in I_OS2LOG.C.  LogInit opens DOOM.LOG and must be
+// called before anything prints; LogWrite puts already-formatted text into it
+// without going near stdout, which is what I_Error wants on its way out.
+//
+void I_OS2_LogInit (void);
+void I_OS2_LogShutdown (void);
+void I_OS2_LogWrite (const char* text);
 
 
 #endif // __OS2DOOM__

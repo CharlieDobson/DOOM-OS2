@@ -27,6 +27,8 @@ rcsid[] = "$Id: i_main.c,v 1.4 1997/02/03 22:45:10 b1 Exp $";
 
 #include <stdio.h>
 
+#include "os2doom.h"
+
 #include "doomdef.h"
 
 #include "m_argv.h"
@@ -47,6 +49,14 @@ main
 ( int		argc,
   char**	argv )
 {
+    // The exception registration record has to live on the stack of the
+    // thread it protects.  OS/2 keeps these in a chain rooted in the thread
+    // information block and checks that each one lies inside that thread's
+    // stack, so a static or a global is refused outright with
+    // ERROR_INVALID_ADDRESS.  main()'s frame lasts as long as the program
+    // does, which makes this the right place for it.
+    EXCEPTIONREGISTRATIONRECORD	xcpt;
+
     myargc = argc;
     myargv = argv;
 
@@ -56,7 +66,20 @@ main
     // I_Error runs first, never arrives at all.
     setvbuf (stdout, NULL, _IONBF, 0);
 
+    // Open the transcript before anything has had a chance to print into it.
+    // It needs myargc and myargv, which is why it comes after those and not
+    // at the very top: -nolog switches it off.
+    I_OS2_LogInit ();
+
+    // Insurance against leaving the desktop with no mouse pointer at all if
+    // the game traps while it has the pointer hidden.  See os2doom.h.
+    xcpt.prev_structure   = NULL;
+    xcpt.ExceptionHandler = I_OS2_ExceptionHandler;
+    DosSetExceptionHandler (&xcpt);
+
     D_DoomMain ();
+
+    DosUnsetExceptionHandler (&xcpt);
 
     return 0;
 }

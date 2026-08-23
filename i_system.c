@@ -193,6 +193,18 @@ int  I_GetTime (void)
 void I_Init (void)
 {
     I_InitSound();
+
+    //
+    // And the music, which upstream never had and so nothing ever called.
+    //
+    // The Linux original's I_InitMusic is an empty function, so leaving it
+    // uncalled cost nothing there and the omission carried over unnoticed.
+    // Here it is where the temporary file for the converted MIDI is chosen,
+    // and without it that path stayed empty -- so every level failed at the
+    // write, blaming a file it had never been told the name of.
+    //
+    I_InitMusic();
+
     //  I_InitGraphics();
 }
 
@@ -206,7 +218,24 @@ void I_Quit (void)
     I_ShutdownMusic();
     M_SaveDefaults ();
     I_ShutdownGraphics();
-    exit(0);
+
+    //
+    // DosExit rather than exit().
+    //
+    // By this point the configuration is written and everything worth
+    // flushing has been flushed, and the only thing left to do is stop.
+    // exit() will not always manage that here: this process has a
+    // Presentation Manager message queue, it may still have an MMPM/2
+    // callback thread of its own inside the audio driver, and the run-time's
+    // orderly shutdown can sit waiting on either of them for ever.  A
+    // program that will not die leaves the session it was started from open
+    // behind it, which is exactly what that looks like from the desktop.
+    //
+    // EXIT_PROCESS stops every thread in the process at once and is not
+    // able to block.
+    //
+    fflush (NULL);
+    DosExit (EXIT_PROCESS, 0);
 }
 
 void I_WaitVBL(int count)
@@ -272,6 +301,45 @@ boolean I_OS2_MorphToPM (void)
 
 
 //
+// I_OS2_MciEntry
+//
+// See os2doom.h.  Loaded once, on first use, and remembered -- including the
+// failure, so a machine without MMPM/2 is not asked again every time a level
+// changes.
+//
+PFNMCISENDCOMMAND I_OS2_MciEntry (void)
+{
+    static boolean		tried = false;
+    static HMODULE		hmodMdm = NULLHANDLE;
+    static PFNMCISENDCOMMAND	pMci = NULL;
+
+    UCHAR			failed[CCHMAXPATH];
+
+    if (tried)
+	return pMci;
+
+    tried = true;
+
+    if (DosLoadModule (failed, sizeof(failed), (PSZ)"MDM", &hmodMdm)
+	!= NO_ERROR)
+    {
+	hmodMdm = NULLHANDLE;
+	return NULL;
+    }
+
+    if (DosQueryProcAddr (hmodMdm, 0, (PSZ)"mciSendCommand",
+			  (PFN *)&pMci) != NO_ERROR)
+    {
+	DosFreeModule (hmodMdm);
+	hmodMdm = NULLHANDLE;
+	pMci = NULL;
+    }
+
+    return pMci;
+}
+
+
+//
 // I_OS2_ErrorBox
 //
 void I_OS2_ErrorBox (char *text)
@@ -312,6 +380,12 @@ void I_Error (char *error, ...)
     fprintf (stderr, "Error: %s\n", message);
     fflush( stderr );
 
+    // Into the transcript too.  This is the single most useful line the file
+    // will ever hold, and stderr is about to disappear with the session.
+    I_OS2_LogWrite ("Error: ");
+    I_OS2_LogWrite (message);
+    I_OS2_LogWrite ("\n");
+
     // Shutdown. Here might be other errors.
     if (demorecording)
 	G_CheckDemoStatus();
@@ -326,5 +400,8 @@ void I_Error (char *error, ...)
     // appear behind.
     I_OS2_ErrorBox (message);
 
-    exit(-1);
+    // See I_Quit: the run-time's exit can hang here, and a program that will
+    // not die leaves its session open behind it.
+    fflush (NULL);
+    DosExit (EXIT_PROCESS, (ULONG)-1);
 }

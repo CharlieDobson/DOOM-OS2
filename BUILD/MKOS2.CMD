@@ -53,12 +53,33 @@ rem            Still 386 compatible code -- it changes the order of the
 rem            instructions, not which ones -- so a Warp machine with a 486
 rem            in it runs this perfectly well.
 rem
+rem  -ei       Enums are int sized, as gcc makes them.
+rem
+rem            NOT optional, and the reason is worth writing down.  Open
+rem            Watcom sizes an enum as the smallest type that will hold it,
+rem            so DOOM's "typedef enum {false,true} boolean" comes out ONE
+rem            byte.  Under gcc, which the released code was built with, it
+rem            is four.  That matters because R_DATA.C lays maptexture_t
+rem            straight over the TEXTURE1 lump, and maptexture_t has a
+rem            boolean in the middle of it: without -ei every texture's width
+rem            is read from the wrong offset and comes back zero, and no wall
+rem            in the game draws properly.  Nothing warns; it just looks
+rem            wrong.
+rem
+rem  NOTE: the flags are -otexn, NOT -otexan.  The "a" is "relax alias
+rem            checking", which tells the compiler that pointers of different
+rem            types never refer to the same storage.  DOOM breaks that rule
+rem            constantly and deliberately -- the column drawing, screens[0],
+rem            the network packet swabbing -- so it is exactly the wrong
+rem            promise to make here, and the symptom is subtly wrong rendering
+rem            rather than a crash.
+rem
 rem  -w1       DOOM is from 1997 and was written for gcc.  At -w4 the
 rem            unreferenced rcsid[] string at the top of all sixty files, and
 rem            a good deal else that is deliberate, buries anything worth
 rem            reading.
 rem --------------------------------------------------------------------------
-set CFLAGS=-bt=os2 -bm -dNORMALUNIX -otexan -5r -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
+set CFLAGS=-bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
 
 rem  !! STACK !!  1 MB, not the default.
 rem
@@ -82,7 +103,7 @@ rem     the OS/2 port.  Everything else is the engine, as id released it,
 rem     apart from the handful of places noted in README.OS2.
 rem --------------------------------------------------------------------------
 echo Compiling the OS/2 platform layer...
-for %%F in (i_main i_system i_video i_sound i_net) do (
+for %%F in (i_main i_system i_video i_sound i_net d_os2iwd i_os2mus i_os2log) do (
   wcc386 ..\%%F.c %CFLAGS%
   if errorlevel 1 goto failed
   if not exist %%F.obj goto failed
@@ -129,6 +150,7 @@ wlink sys os2v2 name DOOM.EXE ^
   option quiet option map option stack=%STACK% ^
   option description 'DOOM for OS/2' ^
   file i_main.obj,i_system.obj,i_video.obj,i_sound.obj,i_net.obj, ^
+       d_os2iwd.obj,i_os2mus.obj,i_os2log.obj, ^
        doomdef.obj,doomstat.obj,dstrings.obj,tables.obj,f_finale.obj, ^
        f_wipe.obj,d_main.obj,d_net.obj,d_items.obj,g_game.obj,m_menu.obj, ^
        m_misc.obj,m_argv.obj,m_bbox.obj,m_fixed.obj,m_swap.obj, ^
@@ -142,6 +164,29 @@ wlink sys os2v2 name DOOM.EXE ^
        hu_lib.obj,s_sound.obj,z_zone.obj,info.obj,sounds.obj
 if errorlevel 1 goto failed
 if not exist DOOM.EXE goto failed
+
+rem --------------------------------------------------------------------------
+rem  3. resources (optional)
+rem
+rem     Only if there is an icon to bind.  RES\DOOM.OS2 must be a genuine
+rem     OS/2 icon; see the comment at the top of RES\DOOM.RC for why a
+rem     Windows .ICO will not do, and why nothing breaks if this step is
+rem     skipped entirely.
+rem --------------------------------------------------------------------------
+if not exist ..\RES\DOOM.OS2 goto noresources
+
+echo Compiling and binding resources...
+wrc -bt=os2 -r -q -i=..\RES -i=%WATCOM%\H\OS2 ..\RES\DOOM.RC -fo=DOOM.res
+if errorlevel 1 goto failed
+
+wrc -bt=os2 -q DOOM.res DOOM.EXE
+if errorlevel 1 goto failed
+goto haveresources
+
+:noresources
+echo No RES\DOOM.OS2 icon - building without one (the default icon is used).
+
+:haveresources
 
 del *.obj >nul 2>&1
 

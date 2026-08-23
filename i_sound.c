@@ -122,10 +122,9 @@ int 		lengths[NUMSFX];
 // multimedia support installed has no MDM.DLL, and a DOOM.EXE that imported
 // it would refuse to load at all rather than simply running without sound.
 //
-typedef ULONG (APIENTRY *PFNMCISENDCOMMAND)(USHORT, USHORT, ULONG,
-					    PVOID, USHORT);
-
-static HMODULE			hmodMdm		= NULLHANDLE;
+// The typedef and the loading both live in os2doom.h / I_SYSTEM.C now, so
+// that the music module can share the one MDM.DLL.  This is just the cached
+// entry point.
 static PFNMCISENDCOMMAND	pMciSendCommand	= NULL;
 
 // How many buffers DART keeps in flight.  Each one holds whole mixes of
@@ -135,8 +134,37 @@ static PFNMCISENDCOMMAND	pMciSendCommand	= NULL;
 // in the sound when the machine is busy.
 #define NUM_DART_BUFFERS	3
 
-// One mix, in bytes: SAMPLECOUNT frames, two channels, two bytes each.
+// One mix as DOOM produces it, in bytes: SAMPLECOUNT frames, two channels,
+// two bytes each.  What is handed to DART may be smaller -- see below.
 #define DART_CHUNK		(SAMPLECOUNT*BUFMUL)
+
+//
+// What the sound card agreed to take.
+//
+// DOOM mixes in 16 bit signed stereo and nothing else, but not every card
+// will play that.  The Sound Blaster this port was first tried on is an MCA
+// card of 1989 vintage: eight bit, mono, and no amount of asking will make it
+// anything else.  MCI_MIXSETUP simply refuses, and refusing is all it does --
+// it does not say what it would have accepted instead.
+//
+// So the formats are offered in turn, best first, and the mix is converted
+// into whichever one is taken.  Sixteen bit stereo costs nothing, being a
+// straight copy; the others cost one pass over 512 frames, which is nothing
+// measured against mixing them in the first place.
+//
+// The rate is negotiated too, because a driver that only advertises 22050 or
+// 44100 refuses 11025 exactly as flatly as it refuses a format it cannot
+// play.  Both are whole multiples of DOOM's own 11025, so meeting them costs
+// only repeating each frame -- crude as resampling goes, but the samples in
+// the WAD are 11025 Hz mono to begin with and interpolating invents detail
+// that was never recorded.
+static int			dartBits     = 16;
+static int			dartChannels = 2;
+static int			dartRate     = SAMPLERATE;
+static int			dartRateMul  = 1;
+
+// One mix in the format actually agreed: SAMPLECOUNT frames of it.
+static ULONG			dartChunk    = DART_CHUNK;
 
 static USHORT			mciDeviceID = 0;
 static MCI_MIXSETUP_PARMS	mciMixSetup;
@@ -148,6 +176,75 @@ static ULONG			dartBufSize = 0;
 
 static boolean			dartUp	    = false;	// stream is running
 static boolean			dartBuffers = false;	// memory is allocated
+
+//
+// The playlist path: streaming for drivers that came before DART.
+//
+// MCI_MIXSETUP *is* the DART interface, so a waveaudio driver that does not
+// implement DART refuses every format offered, identically, with no hint that
+// the formats were never the problem.  The Sound Blaster MCV driver is one of
+// these -- the card is a 1989 design and its OS/2 support predates the direct
+// audio interface by years.
+//
+// What such a driver does support is the older mechanism: a playlist.  A
+// playlist is a little program the audio device executes -- play this block
+// of memory, tell the application about it, play the next, branch back to the
+// start -- and it streams continuously without DART.
+//
+// Two things follow from the shape of it.  The refill happens on the window
+// thread rather than on a callback thread of the driver's, which means no
+// mutex is needed but also that a long stall in the game is heard.  And the
+// BRANCH at the end means the device never runs out of anything to play: if
+// the game is too busy to refill a buffer the old contents are played again,
+// which is a glitch rather than silence.  A stream that stops cannot easily
+// be restarted; one that repeats itself recovers by itself.
+//
+#define NUM_PL_BUFFERS		4
+
+// Started late, from I_SubmitSound, once there is a window for it to report
+// to; defined further down, with the rest of the playlist code.
+static boolean I_InitPlaylist (void);
+static void    I_FreePlaylistMemory (void);
+
+//
+// Everything the audio driver is given a pointer to is allocated with
+// OBJ_TILE, and that is not a detail.
+//
+// The Sound Blaster MCV driver is a 16 bit device driver from the OS/2 1.x
+// era.  Handed a 32 bit flat address it converts it to a 16:16 selector and
+// offset -- and that conversion is only meaningful for memory in the tiled
+// arena, where a valid 16 bit alias for each page is guaranteed to exist.
+// Ordinary DosAllocMem memory has no such alias, so the driver computes an
+// address that belongs to something else entirely and then reads and writes
+// it at interrupt time.
+//
+// The symptom of getting this wrong is not a trap in DOOM.  It is the whole
+// machine stopping, and the disk being left in whatever state it was in.
+//
+static boolean		playlistUp	= false;
+static boolean		playlistPending	= false;
+static ULONG*		playlist	= NULL;
+static PVOID		plListMem	= NULL;
+static byte*		plBuffer[NUM_PL_BUFFERS];
+static PVOID		plMemory	= NULL;
+static ULONG		plNext		= 0;
+
+// How big one block is.  Not the same as one mix: a 512 byte block is only
+// 46 milliseconds of eight bit mono, and a driver of this age may well have a
+// minimum transfer size larger than that and simply do nothing with blocks
+// below it.  Blocks are therefore rounded up to at least PL_MIN_BLOCK, and
+// hold however many whole mixes that comes to.
+#define PL_MIN_BLOCK		4096
+
+static ULONG		plBlockSize	= 0;
+
+// Whether the device is actually asking for data.  A playlist that opens and
+// plays but never reports a block is indistinguishable, from the speaker, from
+// one that was never started -- both are silence -- so it is worth saying
+// which of the two happened.
+static ULONG		plMessages	= 0;
+static int		plStartTime	= 0;
+static boolean		plComplained	= false;
 
 // Guards the mixing channel table, which two threads touch: the game thread
 // by way of I_StartSound, and DART's own thread by way of the callback.
@@ -467,14 +564,6 @@ void I_SetSfxVolume(int volume)
   snd_SfxVolume = volume;
 }
 
-// MUSIC API - dummy. Some code from DOS version.
-void I_SetMusicVolume(int volume)
-{
-  // Internal state variable.
-  snd_MusicVolume = volume;
-  // Now set volume on output device.
-  // Whatever( snd_MusciVolume );
-}
 
 
 //
@@ -706,6 +795,11 @@ static void I_MixBuffer( void )
 // and removing them would mean changing the engine to suit the platform,
 // which is the wrong way round.
 //
+// The playlist path is the same story with one difference: it reports
+// through the window rather than a thread of its own, so it cannot be
+// started until there is a window.  This is the first place in the game loop
+// that is certain to run after I_InitGraphics, which makes it the place.
+//
 void
 I_UpdateSound(void)
 {
@@ -714,6 +808,35 @@ I_UpdateSound(void)
 void
 I_SubmitSound(void)
 {
+    if (playlistPending)
+    {
+	playlistPending = false;
+
+	if (I_InitPlaylist ())
+	    printf ("I_InitSound: MMPM/2 playlist, %i Hz %i bit %s,"
+		    " %i x %i byte blocks.\n",
+		    dartRate, dartBits,
+		    dartChannels == 2 ? "stereo" : "mono",
+		    NUM_PL_BUFFERS, (int)plBlockSize);
+	else
+	    printf ("I_InitSound: the playlist interface failed too;"
+		    " running silent.\n");
+    }
+
+    //
+    // A playlist that started but has never asked for a block is playing the
+    // same few hundred milliseconds for ever, and sounds like nothing at all.
+    // Three seconds is far longer than the buffer, so by then the device has
+    // either asked or it never will.
+    //
+    if (playlistUp && !plMessages && !plComplained
+	&& I_GetTime () - plStartTime > 3*TICRATE)
+    {
+	plComplained = true;
+	printf ("I_InitSound: the playlist is playing but the device has"
+		" never asked\n"
+		"             for another block -- no sound will follow.\n");
+    }
 }
 
 
@@ -763,6 +886,20 @@ void I_ShutdownSound(void)
       dartUp = false;
   }
 
+  if (playlistUp)
+  {
+      // Same rule as DART: stop the device before the memory it is reading
+      // goes away.  The playlist branches for ever, so nothing else will
+      // ever stop it.
+      memset (&gp, 0, sizeof(gp));
+      gp.hwndCallback = NULLHANDLE;
+      pMciSendCommand (mciDeviceID, MCI_STOP, MCI_WAIT, (PVOID)&gp, 0);
+
+      playlistUp = false;
+  }
+
+  I_FreePlaylistMemory ();
+
   if (dartBuffers)
   {
       pMciSendCommand (mciDeviceID, MCI_BUFFER,
@@ -785,8 +922,10 @@ void I_ShutdownSound(void)
       sndMutex = NULLHANDLE;
   }
 
-  DosFreeModule (hmodMdm);
-  hmodMdm = NULLHANDLE;
+  // MDM.DLL itself is deliberately left loaded.  It belongs to
+  // I_OS2_MciEntry, and the music may still be using it -- I_ShutdownSound
+  // runs before I_ShutdownMusic on the way out, and I_Error can call this
+  // one on its own.
   pMciSendCommand = NULL;
 
   // Done.
@@ -796,6 +935,171 @@ void I_ShutdownSound(void)
 
 
 
+
+
+//
+// The formats offered, best first.
+//
+// Native rate before anything resampled, stereo before mono, sixteen bits
+// before eight -- so the first entry a device accepts is the best it can do.
+// The rate multipliers are whole numbers because DOOM's 11025 divides into
+// both 22050 and 44100 exactly; a driver advertising only 8000 is out of
+// luck, and would be badly served by the fractional resampling it needed.
+//
+static const struct { int bits, channels, ratemul; } sndFormats[] =
+{
+    { 16, 2, 1 }, { 16, 1, 1 }, {  8, 2, 1 }, {  8, 1, 1 },
+    { 16, 2, 2 }, { 16, 1, 2 }, {  8, 2, 2 }, {  8, 1, 2 },
+    { 16, 2, 4 }, { 16, 1, 4 }, {  8, 2, 4 }, {  8, 1, 4 }
+};
+
+#define NUM_SND_FORMATS	(sizeof(sndFormats)/sizeof(sndFormats[0]))
+
+
+//
+// I_TakeFormat
+//
+// Adopt one of the above, and work out how many bytes one mix becomes in it.
+//
+static void I_TakeFormat (int f)
+{
+    dartBits	 = sndFormats[f].bits;
+    dartChannels = sndFormats[f].channels;
+    dartRateMul	 = sndFormats[f].ratemul;
+    dartRate	 = SAMPLERATE * dartRateMul;
+
+    dartChunk	 = (ULONG)SAMPLECOUNT * (dartBits / 8)
+		 * dartChannels * dartRateMul;
+}
+
+
+//
+// I_FormatName
+//
+static char* I_FormatName (int f)
+{
+    static char	buf[64];
+
+    sprintf (buf, "%i Hz %i bit %s",
+	     SAMPLERATE * sndFormats[f].ratemul, sndFormats[f].bits,
+	     sndFormats[f].channels == 2 ? "stereo" : "mono");
+
+    return buf;
+}
+
+
+//
+// I_MciErrName
+//
+// The few MCI errors worth telling apart here.  The distinction that matters
+// is between "this device cannot do that format" and "this device cannot do
+// this at all": the first means keep offering, the second means the whole
+// interface is missing and something else must be tried.
+//
+static char* I_MciErrName (ULONG rc)
+{
+    static char	buf[64];
+    ULONG	raw = rc;
+
+    //
+    // mciSendCommand does not return a bare error code.  The low word holds
+    // the error; the high word holds the device id it happened to, so the
+    // caller can tell which device answered when several are open.  Comparing
+    // the whole thing against MCIERR_ANYTHING therefore never matches -- the
+    // 70541 that started this was 0x1138D, which is device 1 and error 5005,
+    // MCIERR_UNRECOGNIZED_COMMAND.
+    //
+    rc &= 0xFFFF;
+
+    switch (rc)
+    {
+      case MCIERR_UNRECOGNIZED_COMMAND:	return "command not implemented";
+      case MCIERR_UNSUPPORTED_FUNCTION:	return "unsupported function";
+      case MCIERR_INVALID_FLAG:		return "invalid flag";
+      case MCIERR_MISSING_FLAG:		return "missing flag";
+      case MCIERR_UNSUPP_FORMAT_TAG:	return "unsupported format tag";
+      case MCIERR_UNSUPP_SAMPLESPERSEC:	return "unsupported sample rate";
+      case MCIERR_UNSUPP_BITSPERSAMPLE:	return "unsupported sample size";
+      case MCIERR_UNSUPP_CHANNELS:	return "unsupported channel count";
+      case MCIERR_INVALID_DEVICE_NAME:	return "no such device";
+      case MCIERR_DEVICE_LOCKED:	return "device busy";
+      default:				break;
+    }
+
+    sprintf (buf, "MCI error %u", (unsigned)rc);
+    return buf;
+}
+
+
+//
+// I_ConvertMix
+//
+// Copy one finished mix into a DART buffer, in whatever format the card
+// agreed to take.
+//
+// The mixer's output is SAMPLECOUNT frames of 16 bit signed stereo, left
+// sample first.  Going to mono is an average rather than a sum, because the
+// two channels of a DOOM mix are largely the same sound at different volumes
+// and summing them would clip everything loud.  Going to eight bits is a
+// shift and a bias: the PCM the Sound Blaster generation wants is unsigned,
+// with silence at 128 rather than at 0.
+//
+static void I_ConvertMix (byte* out)
+{
+    signed short*	in = mixbuffer;
+    int			i;
+    int			r;
+
+    if (dartBits == 16 && dartChannels == 2 && dartRateMul == 1)
+    {
+	// What DOOM already produces.
+	memcpy (out, mixbuffer, DART_CHUNK);
+	return;
+    }
+
+    if (dartBits == 16)
+    {
+	signed short*	o = (signed short *)out;
+
+	for (i = 0; i < SAMPLECOUNT; i++, in += 2)
+	{
+	    signed short	l = in[0];
+	    signed short	rr = in[1];
+
+	    if (dartChannels == 1)
+		l = rr = (signed short)(((int)in[0] + (int)in[1]) >> 1);
+
+	    for (r = 0; r < dartRateMul; r++)
+	    {
+		*o++ = l;
+		if (dartChannels == 2)
+		    *o++ = rr;
+	    }
+	}
+    }
+    else
+    {
+	for (i = 0; i < SAMPLECOUNT; i++, in += 2)
+	{
+	    byte	l, rr;
+
+	    if (dartChannels == 1)
+		l = rr = (byte)(((((int)in[0] + (int)in[1]) >> 1) >> 8) + 128);
+	    else
+	    {
+		l  = (byte)((in[0] >> 8) + 128);
+		rr = (byte)((in[1] >> 8) + 128);
+	    }
+
+	    for (r = 0; r < dartRateMul; r++)
+	    {
+		*out++ = l;
+		if (dartChannels == 2)
+		    *out++ = rr;
+	    }
+	}
+    }
+}
 
 
 //
@@ -819,7 +1123,11 @@ I_DartEvent
   // UNUSED.
   ulStatus = 0;
 
-  if (ulFlags == MIX_WRITE_COMPLETE && dartUp && pBuffer)
+  // A bitmask test, not an equality test.  MMPM/2 is free to report other
+  // bits alongside MIX_WRITE_COMPLETE, and if it does, an == comparison
+  // silently stops refilling buffers -- which is silence, with no error
+  // anywhere to say why.
+  if ((ulFlags & MIX_WRITE_COMPLETE) && dartUp && pBuffer)
   {
       ULONG	done = 0;
 
@@ -831,11 +1139,11 @@ I_DartEvent
       // Anything left over at the end is not played: a partial chunk would
       // mean throwing away samples the mixer had already stepped past, and
       // the sound would run fast.
-      while (done + DART_CHUNK <= dartBufSize)
+      while (done + dartChunk <= dartBufSize)
       {
 	  I_MixBuffer ();
-	  memcpy ((byte *)pBuffer->pBuffer + done, mixbuffer, DART_CHUNK);
-	  done += DART_CHUNK;
+	  I_ConvertMix ((byte *)pBuffer->pBuffer + done);
+	  done += dartChunk;
       }
 
       if (sndMutex != NULLHANDLE)
@@ -863,22 +1171,15 @@ I_DartEvent
 static boolean I_InitDart (void)
 {
   MCI_AMP_OPEN_PARMS	amp;
-  UCHAR			failed[CCHMAXPATH];
   int			i;
 
-  if (DosLoadModule (failed, sizeof(failed), (PSZ)"MDM", &hmodMdm)
-      != NO_ERROR)
+  // The one door into MMPM/2, shared with the music (I_OS2MUS.C) so that
+  // MDM.DLL is loaded once however many of the two end up being used.
+  // NULL means this machine has no multimedia support installed.
+  pMciSendCommand = I_OS2_MciEntry ();
+  if (!pMciSendCommand)
   {
-      hmodMdm = NULLHANDLE;
-      return false;
-  }
-
-  if (DosQueryProcAddr (hmodMdm, 0, (PSZ)"mciSendCommand",
-			(PFN *)&pMciSendCommand) != NO_ERROR)
-  {
-      DosFreeModule (hmodMdm);
-      hmodMdm = NULLHANDLE;
-      pMciSendCommand = NULL;
+      puts ("I_InitSound: MDM.DLL not present - no MMPM/2 on this machine.");
       return false;
   }
 
@@ -895,26 +1196,67 @@ static boolean I_InitDart (void)
   if (pMciSendCommand (0, MCI_OPEN,
 		       MCI_WAIT | MCI_OPEN_TYPE_ID | MCI_OPEN_SHAREABLE,
 		       (PVOID)&amp, 0) != MCIERR_SUCCESS)
+  {
+      puts ("I_InitSound: MCI_OPEN of the waveaudio device failed.");
       return false;
+  }
 
   mciDeviceID = amp.usDeviceID;
 
   //
   // Tell the mixer what it is going to be fed, and where to call back.
   //
-  memset (&mciMixSetup, 0, sizeof(mciMixSetup));
-  mciMixSetup.ulBitsPerSample	= 16;
-  mciMixSetup.ulFormatTag	= MCI_WAVE_FORMAT_PCM;
-  mciMixSetup.ulSamplesPerSec	= SAMPLERATE;
-  mciMixSetup.ulChannels	= 2;
-  mciMixSetup.ulFormatMode	= MCI_PLAY;
-  mciMixSetup.ulDeviceType	= MCI_DEVTYPE_WAVEFORM_AUDIO;
-  mciMixSetup.pmixEvent		= I_DartEvent;
+  // Offered best first.  MCI_MIXSETUP will not negotiate -- it either takes
+  // what it is given or fails, without saying what it would have preferred --
+  // so the only way to find out what a card can do is to ask it, in order,
+  // until one answer sticks.  An eight bit mono Sound Blaster of the MCA era
+  // gets all the way to the last entry, and plays.
+  //
+  {
+      int	f;
+      ULONG	rc   = MCIERR_UNSUPPORTED_FUNCTION;
+      boolean	got  = false;
 
-  if (pMciSendCommand (mciDeviceID, MCI_MIXSETUP,
-		       MCI_WAIT | MCI_MIXSETUP_INIT,
-		       (PVOID)&mciMixSetup, 0) != MCIERR_SUCCESS)
-      return false;
+      for (f = 0; f < NUM_SND_FORMATS && !got; f++)
+      {
+	  memset (&mciMixSetup, 0, sizeof(mciMixSetup));
+	  mciMixSetup.ulBitsPerSample	= sndFormats[f].bits;
+	  mciMixSetup.ulFormatTag	= MCI_WAVE_FORMAT_PCM;
+	  mciMixSetup.ulSamplesPerSec	= SAMPLERATE * sndFormats[f].ratemul;
+	  mciMixSetup.ulChannels	= sndFormats[f].channels;
+	  mciMixSetup.ulFormatMode	= MCI_PLAY;
+	  mciMixSetup.ulDeviceType	= MCI_DEVTYPE_WAVEFORM_AUDIO;
+	  mciMixSetup.pmixEvent		= I_DartEvent;
+
+	  rc = pMciSendCommand (mciDeviceID, MCI_MIXSETUP,
+				MCI_WAIT | MCI_MIXSETUP_INIT,
+				(PVOID)&mciMixSetup, 0);
+
+	  if (rc == MCIERR_SUCCESS)
+	  {
+	      I_TakeFormat (f);
+	      got = true;
+	  }
+	  else
+	      printf ("I_InitSound: DART refused %s (%s).\n",
+		      I_FormatName (f), I_MciErrName (rc));
+      }
+
+      if (!got)
+      {
+	  //
+	  // Every format refused in the same way means the formats were never
+	  // the question.  MCI_MIXSETUP is the DART interface itself, so a
+	  // driver that does not implement it says no to all of them --
+	  // MCIERR_UNSUPPORTED_FUNCTION being the honest version of that
+	  // answer, though not every driver troubles to give it.
+	  //
+	  printf ("I_InitSound: this driver has no DART (last error %s);\n"
+		  "             trying the older playlist interface.\n",
+		  I_MciErrName (rc));
+	  return false;
+      }
+  }
 
   //
   // Ask DART for the buffers.  It allocates them itself -- they have to be
@@ -925,13 +1267,16 @@ static boolean I_InitDart (void)
   memset (&mciBufferParms, 0, sizeof(mciBufferParms));
   mciBufferParms.ulStructLength	= sizeof(mciBufferParms);
   mciBufferParms.ulNumBuffers	= NUM_DART_BUFFERS;
-  mciBufferParms.ulBufferSize	= DART_CHUNK;
+  mciBufferParms.ulBufferSize	= dartChunk;
   mciBufferParms.pBufList	= mciBuffers;
 
   if (pMciSendCommand (mciDeviceID, MCI_BUFFER,
 		       MCI_WAIT | MCI_ALLOCATE_MEMORY,
 		       (PVOID)&mciBufferParms, 0) != MCIERR_SUCCESS)
+  {
+      puts ("I_InitSound: MCI_BUFFER could not allocate the DART buffers.");
       return false;
+  }
 
   dartBuffers = true;
   dartBufSize = mciBufferParms.ulBufferSize;
@@ -939,8 +1284,11 @@ static boolean I_InitDart (void)
   // A buffer too small to hold one whole mix would play nothing but silence
   // -- see the loop in I_DartEvent -- so say so now rather than leave the
   // user wondering why the game is mute.
-  if (dartBufSize < DART_CHUNK)
+  if (dartBufSize < dartChunk)
+  {
+      puts ("I_InitSound: DART gave back a buffer too small for one mix.");
       return false;
+  }
 
   //
   // Prime every buffer with silence and set the stream running.  Queueing
@@ -953,7 +1301,12 @@ static boolean I_InitDart (void)
       mciBuffers[i].ulBufferLength = dartBufSize;
       mciBuffers[i].ulFlags	   = 0;
       mciBuffers[i].ulUserParm	   = 0;
-      memset (mciBuffers[i].pBuffer, 0, dartBufSize);
+
+      // Silence is not always zero.  Sixteen bit PCM is signed and silence
+      // sits at 0, but eight bit PCM is unsigned and silence sits at 128 --
+      // filling an eight bit buffer with zeroes primes the stream with a
+      // full-scale negative offset, which the speaker reports as a thump.
+      memset (mciBuffers[i].pBuffer, dartBits == 8 ? 128 : 0, dartBufSize);
   }
 
   dartUp = true;
@@ -962,10 +1315,437 @@ static boolean I_InitDart (void)
 			     mciBuffers, NUM_DART_BUFFERS) != MCIERR_SUCCESS)
   {
       dartUp = false;
+      puts ("I_InitSound: pmixWrite would not start the stream.");
       return false;
   }
 
   return true;
+}
+
+
+//
+// I_BuildPlaylist
+//
+// Write the little program the audio device will run: play each buffer in
+// turn, say so after each one, and branch back to the beginning.
+//
+// The message after each block is what makes this work as a stream.  The
+// playlist processor only moves past a DATA operation when the device has
+// finished with that block, so the message means "buffer n is free" -- which
+// is precisely when it can be filled again.
+//
+//
+// I_FreePlaylistMemory
+//
+// Both tiled allocations, together, from wherever the setup gave up.
+//
+static void I_FreePlaylistMemory (void)
+{
+    if (plMemory)
+    {
+	DosFreeMem (plMemory);
+	plMemory = NULL;
+    }
+
+    if (plListMem)
+    {
+	DosFreeMem (plListMem);
+	plListMem = NULL;
+	playlist  = NULL;
+    }
+}
+
+
+//
+// PlBlockSize
+//
+// One block: at least PL_MIN_BLOCK bytes, and a whole number of mixes, since
+// the mixer only ever produces complete ones.
+//
+static ULONG PlBlockSize (ULONG chunk)
+{
+    ULONG	n = (PL_MIN_BLOCK + chunk - 1) / chunk;
+    ULONG	size = n * chunk;
+
+    // Never past what was allocated for a block.
+    while (size > (ULONG)(SAMPLECOUNT * 2 * 2 * 4))
+	size -= chunk;
+
+    return size;
+}
+
+
+static void I_BuildPlaylist (ULONG chunk)
+{
+    int		i;
+    int		e = 0;
+
+    for (i = 0; i < NUM_PL_BUFFERS; i++)
+    {
+	playlist[e*4+0] = DATA_OPERATION;
+	playlist[e*4+1] = (ULONG)plBuffer[i];
+	playlist[e*4+2] = chunk;
+	playlist[e*4+3] = 0;
+	e++;
+
+	playlist[e*4+0] = MESSAGE_OPERATION;
+	playlist[e*4+1] = (ULONG)i;
+	playlist[e*4+2] = 0;
+	playlist[e*4+3] = 0;
+	e++;
+    }
+
+    // Round and round.  Never EXIT: a stream that stops cannot easily be
+    // started again, and one that repeats the last thing it had merely
+    // stutters while the game catches up.
+    playlist[e*4+0] = BRANCH_OPERATION;
+    playlist[e*4+1] = 0;
+    playlist[e*4+2] = 0;
+    playlist[e*4+3] = 0;
+}
+
+
+//
+// I_InitPlaylist
+//
+// The fallback for drivers without DART.  Called after the window exists,
+// because the playlist reports its progress by posting to it.
+//
+static boolean I_InitPlaylist (void)
+{
+    MCI_OPEN_PARMS	op;
+    MCI_WAVE_SET_PARMS	sp;
+    MCI_PLAY_PARMS	pp;
+    ULONG		rc = 0;
+    ULONG		plOpenFlags = 0;
+    int			f;
+    int			i;
+    boolean		got = false;
+
+    //
+    // Fetch the entry point again rather than trusting the cached one.
+    //
+    // I_InitSound calls I_ShutdownSound when DART is refused, to give back
+    // the device that did open before the failure -- and the last thing
+    // I_ShutdownSound does is set pMciSendCommand to NULL.  So by the time
+    // this runs the cached pointer is always gone, and the test below used to
+    // fail here and return without a word, which looked exactly like the
+    // playlist having been tried and refused.  MDM.DLL is still loaded;
+    // I_OS2_MciEntry hands back the same address it did the first time.
+    //
+    if (!pMciSendCommand)
+	pMciSendCommand = I_OS2_MciEntry ();
+
+    if (!pMciSendCommand)
+    {
+	puts ("I_InitSound: MDM.DLL is not available for the playlist.");
+	return false;
+    }
+
+    if (os2_hwndClient == NULLHANDLE)
+    {
+	puts ("I_InitSound: no window yet; the playlist cannot be started.");
+	return false;
+    }
+
+    //
+    // One block of memory for all the buffers, at the largest size any
+    // offered format could need -- sixteen bits, two channels, four times
+    // the rate.  Sized once so that the format can be renegotiated below
+    // without allocating again.
+    //
+    // OBJ_TILE on both -- see the note at the top of this file's playlist
+    // section.  The driver is 16 bit and needs a 16:16 alias for anything it
+    // is given the address of, and that includes the playlist itself, not
+    // only the sound it points at.
+    if (DosAllocMem (&plMemory,
+		     NUM_PL_BUFFERS * SAMPLECOUNT * 2 * 2 * 4,
+		     PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_TILE) != NO_ERROR)
+    {
+	puts ("I_InitSound: no memory for the playlist buffers.");
+	return false;
+    }
+
+    if (DosAllocMem (&plListMem, 4096,
+		     PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_TILE) != NO_ERROR)
+    {
+	puts ("I_InitSound: no memory for the playlist itself.");
+	I_FreePlaylistMemory ();
+	return false;
+    }
+
+    playlist = (ULONG *)plListMem;
+
+    for (i = 0; i < NUM_PL_BUFFERS; i++)
+	plBuffer[i] = (byte *)plMemory + i * (SAMPLECOUNT * 2 * 2 * 4);
+
+    //
+    // First: which flags does this driver want a playlist opened with?
+    //
+    // Whether MCI_OPEN_ELEMENT belongs alongside MCI_OPEN_PLAYLIST is not
+    // something the documentation is clear about, and whether an old driver
+    // will share its one audio path is not something to assume.  Rather than
+    // guess, all four combinations are tried once, with the first format's
+    // playlist, and whichever opens is used for the negotiation proper.  It
+    // costs four calls on a machine where this path is needed at all.
+    //
+    {
+	static const ULONG	flagsets[4] =
+	{
+	    MCI_WAIT | MCI_OPEN_TYPE_ID | MCI_OPEN_PLAYLIST
+		     | MCI_OPEN_ELEMENT | MCI_OPEN_SHAREABLE,
+	    MCI_WAIT | MCI_OPEN_TYPE_ID | MCI_OPEN_PLAYLIST
+		     | MCI_OPEN_ELEMENT,
+	    MCI_WAIT | MCI_OPEN_TYPE_ID | MCI_OPEN_PLAYLIST
+		     | MCI_OPEN_SHAREABLE,
+	    MCI_WAIT | MCI_OPEN_TYPE_ID | MCI_OPEN_PLAYLIST
+	};
+
+	int	s;
+
+	I_BuildPlaylist ((ULONG)SAMPLECOUNT * (sndFormats[0].bits / 8)
+			 * sndFormats[0].channels * sndFormats[0].ratemul);
+
+	for (s = 0; s < 4; s++)
+	{
+	    memset (&op, 0, sizeof(op));
+	    op.hwndCallback   = os2_hwndClient;
+	    op.pszDeviceType  = (PSZ) MAKEULONG (MCI_DEVTYPE_WAVEFORM_AUDIO, 0);
+	    op.pszElementName = (PSZ) playlist;
+
+	    rc = pMciSendCommand (0, MCI_OPEN, flagsets[s], (PVOID)&op, 0);
+
+	    if (rc == MCIERR_SUCCESS)
+	    {
+		MCI_GENERIC_PARMS	gp;
+
+		plOpenFlags = flagsets[s];
+
+		memset (&gp, 0, sizeof(gp));
+		pMciSendCommand (op.usDeviceID, MCI_CLOSE, MCI_WAIT,
+				 (PVOID)&gp, 0);
+		break;
+	    }
+
+	    printf ("I_InitSound: playlist open, flags %lu: %s.\n",
+		    (unsigned long)flagsets[s], I_MciErrName (rc));
+	}
+
+	if (!plOpenFlags)
+	{
+	    printf ("I_InitSound: this driver will not open a playlist"
+		    " either.\n");
+	    I_FreePlaylistMemory ();
+	    return false;
+	}
+    }
+
+    //
+    // The same formats, offered the same way.  The device is opened afresh
+    // for each attempt because the playlist -- which carries the block length
+    // and so depends on the format -- is handed over at open time and cannot
+    // be changed afterwards.
+    //
+    for (f = 0; f < NUM_SND_FORMATS && !got; f++)
+    {
+	ULONG	chunk = (ULONG)SAMPLECOUNT * (sndFormats[f].bits / 8)
+		      * sndFormats[f].channels * sndFormats[f].ratemul;
+
+	plBlockSize = PlBlockSize (chunk);
+	I_BuildPlaylist (plBlockSize);
+
+	memset (&op, 0, sizeof(op));
+	op.hwndCallback	  = os2_hwndClient;
+	op.pszDeviceType  = (PSZ) MAKEULONG (MCI_DEVTYPE_WAVEFORM_AUDIO, 0);
+	op.pszElementName = (PSZ) playlist;
+
+	rc = pMciSendCommand (0, MCI_OPEN, plOpenFlags, (PVOID)&op, 0);
+
+	if (rc != MCIERR_SUCCESS)
+	{
+	    printf ("I_InitSound: playlist open refused for %s (%s).\n",
+		    I_FormatName (f), I_MciErrName (rc));
+	    continue;
+	}
+
+	mciDeviceID = op.usDeviceID;
+
+	// Now say what the blocks contain.  A device that cannot play this
+	// format says so here rather than at the open.
+	memset (&sp, 0, sizeof(sp));
+	sp.usFormatTag	    = MCI_WAVE_FORMAT_PCM;
+	sp.usChannels	    = (USHORT)sndFormats[f].channels;
+	sp.ulSamplesPerSec  = (ULONG)(SAMPLERATE * sndFormats[f].ratemul);
+	sp.usBitsPerSample  = (USHORT)sndFormats[f].bits;
+	sp.usBlockAlign	    = (USHORT)(sndFormats[f].channels
+				       * (sndFormats[f].bits / 8));
+	sp.ulAvgBytesPerSec = sp.ulSamplesPerSec * sp.usBlockAlign;
+
+	rc = pMciSendCommand (mciDeviceID, MCI_SET,
+			      MCI_WAIT | MCI_WAVE_SET_FORMATTAG
+			      | MCI_WAVE_SET_CHANNELS
+			      | MCI_WAVE_SET_SAMPLESPERSEC
+			      | MCI_WAVE_SET_BITSPERSAMPLE
+			      | MCI_WAVE_SET_BLOCKALIGN
+			      | MCI_WAVE_SET_AVGBYTESPERSEC,
+			      (PVOID)&sp, 0);
+
+	if (rc != MCIERR_SUCCESS)
+	{
+	    MCI_GENERIC_PARMS	gp;
+
+	    printf ("I_InitSound: playlist device will not take %s (%s).\n",
+		    I_FormatName (f), I_MciErrName (rc));
+
+	    memset (&gp, 0, sizeof(gp));
+	    pMciSendCommand (mciDeviceID, MCI_CLOSE, MCI_WAIT,
+			     (PVOID)&gp, 0);
+	    mciDeviceID = 0;
+	    continue;
+	}
+
+	I_TakeFormat (f);
+	got = true;
+    }
+
+    //
+    // Last resort: open it and say nothing about the format.
+    //
+    // A driver old enough not to know MCI_MIXSETUP may not know MCI_SET's
+    // wave parameters either, in which case it plays whatever its own default
+    // is.  For a Sound Blaster of this generation that default is the only
+    // thing the hardware does -- 11025 Hz, eight bit, mono -- so assuming it
+    // is a fair bet, and a wrong bet is audible rather than dangerous: the
+    // pitch would be off, and leaving -playlist off turns it back off again.
+    //
+    if (!got)
+    {
+	I_TakeFormat (3);			// 11025 Hz, 8 bit, mono
+
+	plBlockSize = PlBlockSize (dartChunk);
+	I_BuildPlaylist (plBlockSize);
+
+	memset (&op, 0, sizeof(op));
+	op.hwndCallback	  = os2_hwndClient;
+	op.pszDeviceType  = (PSZ) MAKEULONG (MCI_DEVTYPE_WAVEFORM_AUDIO, 0);
+	op.pszElementName = (PSZ) playlist;
+
+	rc = pMciSendCommand (0, MCI_OPEN, plOpenFlags, (PVOID)&op, 0);
+
+	if (rc == MCIERR_SUCCESS)
+	{
+	    mciDeviceID = op.usDeviceID;
+	    got = true;
+
+	    printf ("I_InitSound: no format would be set; assuming the"
+		    " driver's own\n"
+		    "             11025 Hz 8 bit mono.\n");
+	}
+    }
+
+    if (!got)
+    {
+	I_FreePlaylistMemory ();
+	return false;
+    }
+
+    //
+    // Turn the volume up before playing anything.
+    //
+    // The device's own idea of its level is whatever the last program to
+    // touch it left behind, and on a driver that has just refused every
+    // format flag it is not safe to assume that is anything in particular.
+    // A failure here is ignored: plenty of drivers do not implement it, and
+    // the ones that do not are generally the ones already at full level.
+    //
+    {
+	MCI_SET_PARMS	vp;
+
+	memset (&vp, 0, sizeof(vp));
+	vp.ulLevel = 100;
+	vp.ulAudio = MCI_SET_AUDIO_ALL;
+
+	pMciSendCommand (mciDeviceID, MCI_SET,
+			 MCI_WAIT | MCI_SET_AUDIO | MCI_SET_VOLUME,
+			 (PVOID)&vp, 0);
+    }
+
+    // Prime every block with real sound rather than silence.  If the device
+    // never asks for more -- the failure this is most likely to meet -- then
+    // what it plays over and over is at least audible, which distinguishes
+    // "the stream is not running" from "the stream is running and starved".
+    for (i = 0; i < NUM_PL_BUFFERS; i++)
+    {
+	ULONG	off;
+
+	for (off = 0; off + dartChunk <= plBlockSize; off += dartChunk)
+	{
+	    I_MixBuffer ();
+	    I_ConvertMix (plBuffer[i] + off);
+	}
+    }
+
+    plNext	 = 0;
+    plMessages	 = 0;
+    plComplained = false;
+    plStartTime	 = I_GetTime ();
+
+    memset (&pp, 0, sizeof(pp));
+    pp.hwndCallback = os2_hwndClient;
+
+    rc = pMciSendCommand (mciDeviceID, MCI_PLAY, 0, (PVOID)&pp, 0);
+
+    if (rc != MCIERR_SUCCESS)
+    {
+	printf ("I_InitSound: the playlist would not start (%s).\n",
+		I_MciErrName (rc));
+	return false;
+    }
+
+    playlistUp = true;
+    return true;
+}
+
+
+//
+// I_OS2_PlaylistNotify
+//
+// MM_MCIPLAYLISTMESSAGE: the device has finished with one of the blocks.
+//
+// Unlike DART's callback this arrives on the game's own thread, by way of the
+// window procedure, so nothing here needs guarding against the mixer running
+// at the same time -- it cannot.
+//
+void I_OS2_PlaylistNotify (ULONG which)
+{
+    if (!playlistUp)
+	return;
+
+    // The blocks are reported in order, so our own count is as good as the
+    // number that came with the message -- and better if the message ever
+    // carries something unexpected.
+    if (which >= NUM_PL_BUFFERS)
+	which = plNext;
+
+    plNext = (which + 1) % NUM_PL_BUFFERS;
+
+    // The first one is worth saying out loud: it is the proof that the device
+    // is actually consuming what it is given, which nothing else can show.
+    if (!plMessages)
+	printf ("I_InitSound: the playlist is feeding"
+		" (first block requested).\n");
+
+    plMessages++;
+
+    {
+	ULONG	off;
+
+	for (off = 0; off + dartChunk <= plBlockSize; off += dartChunk)
+	{
+	    I_MixBuffer ();
+	    I_ConvertMix (plBuffer[which] + off);
+	}
+    }
 }
 
 
@@ -1009,19 +1789,49 @@ I_InitSound()
   //
   // And now the device.
   //
-  printf ("I_InitSound: ");
-
   if (M_CheckParm ("-nosound"))
-      printf ("disabled by -nosound.\n");
+      printf ("I_InitSound: disabled by -nosound.\n");
   else if (I_InitDart ())
-      printf ("MMPM/2 DART, %i Hz 16 bit stereo, %i x %i byte buffers.\n",
-	      SAMPLERATE, NUM_DART_BUFFERS, (int)dartBufSize);
+      printf ("I_InitSound: MMPM/2 DART, %i Hz %i bit %s,"
+	      " %i x %i byte buffers.\n",
+	      dartRate, dartBits, dartChannels == 2 ? "stereo" : "mono",
+	      NUM_DART_BUFFERS, (int)dartBufSize);
   else
   {
-      printf ("no MMPM/2 waveaudio device available, running silent.\n");
-
       // Give back whatever did open before the failure.
       I_ShutdownSound ();
+
+      //
+      // The playlist path is asked for, not assumed.
+      //
+      // It hands a 16 bit device driver the addresses of memory this process
+      // owns, and gets sound out of hardware that has no other way of
+      // producing any -- but when it goes wrong it does not go wrong politely.
+      // On this machine it locked the system hard and left the disk needing
+      // CHKDSK.  That is not something to do to somebody who merely started
+      // the game.
+      //
+      // So DART is tried automatically, and if there is none, the game says
+      // what the alternative is and runs silent until asked.
+      //
+      if (!M_CheckParm ("-playlist"))
+	  printf ("I_InitSound: this driver has no DART, so there is no sound."
+		  "\n             Run with -playlist to try the older"
+		  " streaming interface\n"
+		  "             -- see README.OS2 first.\n");
+      else
+      {
+	  //
+	  // The playlist needs the game window to report its progress to, and
+	  // that does not exist yet -- I_InitGraphics runs after this.  So it
+	  // is only marked as wanted here, and started by the first call to
+	  // I_SubmitSound, which by definition happens once the game loop and
+	  // its window are up.
+	  //
+	  printf ("I_InitSound: no DART; the playlist interface will be"
+		  " tried once the window is up.\n");
+	  playlistPending = true;
+      }
   }
 
   // Finished initialization.
@@ -1030,65 +1840,4 @@ I_InitSound()
 
 
 
-
-//
-// MUSIC API.
-// Still no music done.
-// Remains. Dummies.
-//
-void I_InitMusic(void)		{ }
-void I_ShutdownMusic(void)	{ }
-
-static int	looping=0;
-static int	musicdies=-1;
-
-void I_PlaySong(int handle, int looping)
-{
-  // UNUSED.
-  handle = looping = 0;
-  musicdies = gametic + TICRATE*30;
-}
-
-void I_PauseSong (int handle)
-{
-  // UNUSED.
-  handle = 0;
-}
-
-void I_ResumeSong (int handle)
-{
-  // UNUSED.
-  handle = 0;
-}
-
-void I_StopSong(int handle)
-{
-  // UNUSED.
-  handle = 0;
-  
-  looping = 0;
-  musicdies = 0;
-}
-
-void I_UnRegisterSong(int handle)
-{
-  // UNUSED.
-  handle = 0;
-}
-
-int I_RegisterSong(void* data)
-{
-  // UNUSED.
-  data = NULL;
-  
-  return 1;
-}
-
-// Is the song playing?
-int I_QrySongPlaying(int handle)
-{
-  // UNUSED.
-  handle = 0;
-  return looping || musicdies > gametic;
-}
 

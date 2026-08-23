@@ -33,6 +33,24 @@
 enum { VERSION =  110 };
 
 
+#ifdef __OS2__
+//
+// Everything the game prints on its way up goes through here, so that a run
+// which failed leaves a transcript behind in DOOM.LOG.  DOOM says a great
+// deal at startup and every word of it matters exactly once -- when something
+// has gone wrong and the session it was said in has already closed.
+//
+// I_OS2LOG.C provides these, and is the one source file that must not pick
+// the macros up.
+//
+int	I_OS2_Printf (const char* fmt, ...);
+int	I_OS2_Puts (const char* s);
+
+#define printf	I_OS2_Printf
+#define puts	I_OS2_Puts
+#endif
+
+
 // Game mode handling - identify IWAD version
 //  to handle IWAD dependend animations etc.
 typedef enum

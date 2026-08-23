@@ -218,6 +218,45 @@ char*		mousetype;
 char*		mousedev;
 #endif
 
+#ifdef __OS2__
+// Defined in I_VIDEO.C; saved and restored through the defaults table below.
+extern int	os2_window_x;
+extern int	os2_window_y;
+extern int	os2_window_w;
+extern int	os2_window_h;
+
+// Defined in I_VIDEO.C.  Declared here rather than by including os2doom.h,
+// which would drag os2.h into an engine source file for one function.
+int	I_OS2_KeyForScancode (int scan);
+
+//
+// What wrote this configuration file.
+//
+// 0, or absent, means "not this port" -- a DEFAULT.CFG from the DOS game,
+// whose key bindings are raw scan codes rather than DOOM's own key codes.
+// 1 means the bindings are already in our alphabet and must be left alone.
+//
+// The first attempt at this sniffed for settings only the DOS setup program
+// writes -- comport, snd_sbport, snd_musicdevice.  That was wrong, and
+// wrong in a way worth remembering: M_SaveDefaults writes out the table
+// below and nothing else, so the very first run of this port deleted all
+// three of them while leaving the scan codes it had failed to convert.  From
+// then on the file was a DOS configuration with no evidence left that it was
+// one, and every later run read the bindings as nonsense and said nothing.
+//
+// A stamp we write ourselves cannot be destroyed by our own saving.
+//
+#define OS2_CFGVERSION	1
+
+int	os2_cfgversion = 0;
+
+// Which of the ten bindings the file actually supplied.  Only those are
+// translated: a binding that came from the table below is already a DOOM key
+// code, and passing, say, the default use key -- a space, 0x20 -- through
+// the scan code table would silently turn it into the letter D.
+static boolean	os2_keyseen[10];
+#endif
+
 extern char*	chat_macros[];
 
 
@@ -294,7 +333,23 @@ default_t	defaults[] =
     {"chatmacro6", (int *) &chat_macros[6], (int) HUSTR_CHATMACRO6 },
     {"chatmacro7", (int *) &chat_macros[7], (int) HUSTR_CHATMACRO7 },
     {"chatmacro8", (int *) &chat_macros[8], (int) HUSTR_CHATMACRO8 },
-    {"chatmacro9", (int *) &chat_macros[9], (int) HUSTR_CHATMACRO9 }
+    {"chatmacro9", (int *) &chat_macros[9], (int) HUSTR_CHATMACRO9 },
+
+#ifdef __OS2__
+    // Where the window was when the game was last shut down.  Kept up to
+    // date from WM_SIZE and WM_MOVE in I_VIDEO.C, so what is saved is
+    // whatever the window looked like at the end.  A width of zero means
+    // nothing has been saved yet and the built-in size is used.
+    {"os2_window_x", &os2_window_x, 0},
+    {"os2_window_y", &os2_window_y, 0},
+    {"os2_window_w", &os2_window_w, 0},
+    {"os2_window_h", &os2_window_h, 0},
+
+    // Written last so that it is the last line of the file: a configuration
+    // that ends with this really was written by this port and completely.
+    {"os2_cfgversion", &os2_cfgversion, 0}
+#endif
+
 
 };
 
@@ -337,6 +392,176 @@ void M_SaveDefaults (void)
 //
 extern byte	scantokey[128];
 
+#ifdef __OS2__
+//
+// M_OS2TranslateDosKeys
+//
+// A DEFAULT.CFG written by DOOM's DOS setup program stores its key bindings
+// as raw PC scan codes -- turn right is 77, fire is 29, use is 57 -- because
+// that is what the DOS keyboard handler dealt in.
+//
+// This build, like the Linux one it came from, uses DOOM's own key codes
+// instead: turn right is KEY_RIGHTARROW, 0xae.  Loading a DOS file as it
+// stands therefore binds turn-right to 77, which this port reads as the
+// letter M, and the arrow keys do nothing at all.  The player is left with a
+// game that only answers the mouse -- and no way to tell why.
+//
+// So the scan codes are put back through the same table the keyboard handler
+// uses, which is exactly the mapping that was lost.  The bindings the player
+// chose are kept; only their spelling changes.  M_SaveDefaults then writes
+// them in the new alphabet, so this happens once.
+//
+
+// The ten bindings the DOS setup program writes, in the order os2_keyseen
+// records them.
+static char*	os2_keynames[10] =
+{
+    "key_right", "key_left", "key_up", "key_down",
+    "key_strafeleft", "key_straferight",
+    "key_fire", "key_use", "key_strafe", "key_speed"
+};
+
+//
+// M_OS2KeyIndex
+//
+// Which of the ten, or -1.
+//
+static int M_OS2KeyIndex (char* name)
+{
+    int		k;
+
+    for (k = 0; k < 10; k++)
+	if (!strcmp (name, os2_keynames[k]))
+	    return k;
+
+    return -1;
+}
+
+
+//
+// M_OS2LooksLikeDosConfig
+//
+// A second opinion, for the case the stamp cannot cover.
+//
+// A configuration written by an early build of this port carries no stamp and
+// may already have been translated, and translating twice would be worse than
+// not translating at all: DOOM's use key is 0x20, which is also the scan code
+// for D, so a second pass would quietly rebind it.
+//
+// The four movement keys settle it.  DOOM's arrow codes are 0xac to 0xaf and
+// the DOS scan codes for the same keys are 0x48 to 0x50, so which side of
+// 0x80 they fall on says which alphabet the file is written in.  If the file
+// supplied none of them there is nothing to go on, and the stamp stands
+// alone.
+//
+static boolean M_OS2LooksLikeDosConfig (void)
+{
+    static char*	arrows[4] =
+	{ "key_right", "key_left", "key_up", "key_down" };
+
+    int		i;
+    int		a;
+    int		seen = 0;
+    int		low  = 0;
+
+    for (a = 0; a < 4; a++)
+    {
+	int	k = M_OS2KeyIndex (arrows[a]);
+
+	if (k < 0 || !os2_keyseen[k])
+	    continue;
+
+	for (i = 0; i < numdefaults; i++)
+	    if (!strcmp (defaults[i].name, arrows[a]))
+	    {
+		seen++;
+		if (*defaults[i].location < 0x80)
+		    low++;
+		break;
+	    }
+    }
+
+    // No evidence either way: trust the missing stamp.
+    if (!seen)
+	return true;
+
+    // Every one of them below 0x80 is a scan code file.  Anything else --
+    // including a mixture -- is left alone, because a player who has bound
+    // movement to letters is better served by nothing happening than by
+    // having those bindings rewritten underneath them.
+    return (low == seen) ? true : false;
+}
+
+
+static void M_OS2TranslateDosKeys (void)
+{
+    int		i;
+    int		k;
+    int		changed = 0;
+
+    if (!M_OS2LooksLikeDosConfig ())
+    {
+	printf ("M_LoadDefaults: %s carries no version stamp, but its\n"
+		"                bindings are already DOOM key codes"
+		" -- left alone.\n", defaultfile);
+	return;
+    }
+
+    for (k = 0; k < 10; k++)
+    {
+	// Not in the file, so it is whatever the table above says -- already
+	// a DOOM key code, and not to be touched.
+	if (!os2_keyseen[k])
+	    continue;
+
+	for (i = 0; i < numdefaults; i++)
+	    if (!strcmp (defaults[i].name, os2_keynames[k]))
+	    {
+		int	key = I_OS2_KeyForScancode (*defaults[i].location);
+
+		if (key)
+		{
+		    *defaults[i].location = key;
+		    changed++;
+		}
+		break;
+	    }
+    }
+
+    printf ("M_LoadDefaults: %s was not written by this port;\n"
+	    "                %i key bindings translated from DOS scan codes.\n",
+	    defaultfile, changed);
+}
+
+
+//
+// M_OS2ShowKeys
+//
+// The bindings actually in force, in hexadecimal, because that is how DOOM's
+// key codes are written down.  Cheap, and it turns "the keyboard does not
+// work" into a question with an answer.
+//
+static void M_OS2ShowKeys (void)
+{
+    int		i;
+    int		k;
+
+    printf ("M_LoadDefaults: bindings");
+
+    for (k = 0; k < 10; k++)
+	for (i = 0; i < numdefaults; i++)
+	    if (!strcmp (defaults[i].name, os2_keynames[k]))
+	    {
+		printf (" %s=%02x", os2_keynames[k] + 4,
+			(unsigned)(*defaults[i].location & 0xff));
+		break;
+	    }
+
+    printf ("\n");
+}
+#endif
+
+
 void M_LoadDefaults (void)
 {
     int		i;
@@ -347,6 +572,9 @@ void M_LoadDefaults (void)
     char*	newstring;
     int		parm;
     boolean	isstring;
+#ifdef __OS2__
+    boolean	hadfile = false;
+#endif
     
     // set everything to base values
     numdefaults = sizeof(defaults)/sizeof(defaults[0]);
@@ -367,6 +595,9 @@ void M_LoadDefaults (void)
     f = fopen (defaultfile, "r");
     if (f)
     {
+#ifdef __OS2__
+	hadfile = true;
+#endif
 	while (!feof(f))
 	{
 	    isstring = false;
@@ -385,6 +616,16 @@ void M_LoadDefaults (void)
 		    sscanf(strparm+2, "%x", &parm);
 		else
 		    sscanf(strparm, "%i", &parm);
+#ifdef __OS2__
+		// Remember which of the ten bindings the file supplied, so
+		// that only those are put through the scan code table.
+		{
+		    int	k = M_OS2KeyIndex (def);
+
+		    if (k >= 0)
+			os2_keyseen[k] = true;
+		}
+#endif
 		for (i=0 ; i<numdefaults ; i++)
 		    if (!strcmp(def, defaults[i].name))
 		    {
@@ -400,6 +641,25 @@ void M_LoadDefaults (void)
 		
 	fclose (f);
     }
+
+#ifdef __OS2__
+    //
+    // A file that does not carry our stamp was not written by this port, so
+    // whatever bindings it supplied are DOS scan codes and have to be
+    // converted.  A file that does carry it is left exactly as it is.
+    //
+    // Note that this is asked of the file, not of the values: 0x20 is both
+    // DOOM's use key and the scan code for D, so the numbers themselves
+    // cannot say which alphabet they are written in.  Only the stamp can.
+    //
+    if (hadfile && os2_cfgversion < OS2_CFGVERSION)
+	M_OS2TranslateDosKeys ();
+
+    // From here on the file is ours, whether it was before or not.
+    os2_cfgversion = OS2_CFGVERSION;
+
+    M_OS2ShowKeys ();
+#endif
 }
 
 

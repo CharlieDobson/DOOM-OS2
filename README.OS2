@@ -4,7 +4,7 @@ DOOM for OS/2
 A port of the released DOOM source to OS/2 2.x and Warp, built with Open
 Watcom 1.9.  The engine is id's, unchanged apart from the handful of places
 listed under "Changes to the engine" below; everything OS/2 about it lives in
-the five platform modules.
+the platform modules.
 
 Requires a real DOOM WAD, as every build of DOOM does.
 
@@ -12,42 +12,85 @@ Requires a real DOOM WAD, as every build of DOOM does.
 Building
 --------
 
-    OS2\BUILD\MKOS2.CMD
+    BUILD\MKOS2.CMD
 
 This is a *cross build*.  It runs on a Windows machine with Open Watcom 1.9
 installed -- Watcom's NT-hosted compiler emits OS/2 LX objects -- and produces
 BUILD\DOOM.EXE for OS/2.  The result cannot be run on the machine that built
 it.  Set %WATCOM% if Open Watcom is not at C:\WATCOM.
 
-Object files stay in BUILD\, out of the source tree.
+To build **on** OS/2 instead, there is a wmake makefile in the same
+directory:
 
-The build has been verified to compile and link clean.  It has *not* been run
-on OS/2; see "What has not been tested" at the end.
+    cd BUILD
+    wmake
+
+Either way the object files stay in BUILD\, out of the source tree, so the
+two never tread on each other's output.
 
 
 Running
 -------
 
-Put DOOM.EXE next to a WAD, or point DOOMWADDIR at one:
+Put DOOM.EXE next to a WAD, or point DOOMWADDIR at one, or name one outright:
 
     SET DOOMWADDIR=D:\GAMES\DOOM
     DOOM
+
+    DOOM -iwad D:\GAMES\DOOM\DOOM.WAD
 
 Run it from an OS/2 window, not a full screen session -- see "Why it is a VIO
 program" below.  The configuration is written to DEFAULT.CFG beside the WADs.
 
 Command line options, beyond the ones every DOOM has:
 
-    -2, -3          Open the window at two or three times 320x200.  The
-                    window can be resized freely afterwards regardless; the
-                    blitter scales to whatever size it is.
+    -iwad <file>    Use this file as the game data, whatever it is called.
+    -2, -3          Open the window at two or three times its normal size.
+                    The window can be resized freely afterwards regardless.
+    -stretch        Let the window be any shape, rather than holding it to
+                    4:3.  See "The window is 4:3" below.
     -nodive         Skip DIVE and use the GPI fallback.  Useful for telling
                     the two apart when something looks wrong.
     -nograbmouse    Leave the mouse pointer alone.  Without this the pointer
                     is captured and hidden whenever the window is active.
     -nosound        Do not open the audio device at all.
+    -nomusic        Sound effects, but no music.
     -mb <n>         Zone heap size in megabytes.  Default 6.  DOS DOOM had
                     this; the Linux build did not.
+
+
+Finding the game data
+---------------------
+
+The released code works out which game it is holding by the *name* of the
+file, from a list of seven it knows.  That has two consequences, and both of
+them bite.
+
+An IWAD under any other name is not found at all: the game stops with
+"W_InitFiles: no files found" and never says what it was looking for.
+
+Worse, retail DOOM is only recognised as retail if the file is called
+DOOMU.WAD.  Every real copy of it -- Ultimate DOOM, the Special Edition, the
+Depths of DOOM boxes -- ships the file as DOOM.WAD, which matches the *next*
+test down and is taken for the three-episode registered game.  It loads, it
+plays, and Episode 4 is silently missing from the menu.
+
+This port asks the file instead.  A WAD carries a directory of every lump in
+it, and which maps are present says exactly which game it is: MAP01 means
+DOOM II or a mission pack, E4M1 means retail, E2M1 means registered, and E1M1
+alone means the shareware episode.  The name on the disk is still consulted
+for the one thing it remains the best evidence for -- telling TNT and Plutonia
+apart from DOOM II, which are identical in structure.
+
+It looks in DOOMWADDIR, then the current directory, then the directory
+DOOM.EXE is in.  That last one matters: a program started from the Workplace
+Shell does not necessarily have its own directory as the current one, so a
+DOOM.EXE sitting happily beside its WAD could otherwise still fail to find it.
+Failing all of those it will take any *.WAD in those directories that turns
+out to be an IWAD, and if there is genuinely nothing it says where it looked.
+
+The identification is in D_OS2IWD.C and is the one part of this port that has
+been tested directly: see "What has been tested" below.
 
 
 How it works
@@ -64,12 +107,24 @@ How it works
   multimedia installed.  It goes through the whole graphics engine every
   frame, so it is slower, but it is correct.
 
-  DIVE.DLL is loaded by name at run time rather than imported, precisely so
-  that a machine without it still runs the game.
-
   DOOM draws straight into the buffer the blitter reads -- I_InitGraphics
   points screens[0] at it -- so there is no copy between the renderer and the
   screen.  The X11 original did the same thing with the XImage's data.
+
+**The window is 4:3.**  DOOM's picture is 320x200, but it was drawn to be
+  seen on a 4:3 screen, where the pixels are half again as tall as they are
+  wide.  Shown at 320x200 on square pixels everything comes out a fifth too
+  short -- most obvious on the faces in the status bar and on anything round.
+  So the window opens at 320x240 (times -2 or -3) and is held to 4:3 while it
+  is dragged, and the blitter stretches the picture to fill it.
+
+  The constraint is done by intercepting WM_ADJUSTWINDOWPOS on the frame,
+  which changes the window and nothing else -- the blitter goes on filling
+  whatever the client area turns out to be.  -stretch turns it off.
+
+  Where the window was is remembered in DEFAULT.CFG and restored next time,
+  clamped to the screen so that a position saved on a larger desktop cannot
+  put the title bar somewhere it cannot be dragged back from.
 
 **Sound.**  MMPM/2 DART, at 11025 Hz 16-bit stereo, which is what DOOM's
   mixer produces.
@@ -87,10 +142,23 @@ How it works
   table that the callback reads and I_StartSound writes is held under a mutex
   semaphore.
 
-  There is still no music.  The Linux original had none either.
+**Music.**  The released source has none: the Linux build left every music
+  entry point empty, and the DOS build's music code was never released -- it
+  was the part that used the licensed sound library id could not ship.  So
+  this is new, and it is in I_OS2MUS.C.
 
-  MDM.DLL is loaded by name, like DIVE.  No sound card, no MMPM/2, or another
-  program holding the device: DOOM says so and plays silently.
+  DOOM stores its music as MUS, a compact relative of MIDI written for the
+  DOS build, which nothing on OS/2 has heard of.  It is converted here into
+  an ordinary type 0 MIDI file and handed to MMPM/2's MCI sequencer.
+
+  The timing is exact rather than approximate: MUS counts in 140ths of a
+  second, and a MIDI tick is (tempo / division) microseconds, so a division
+  of 70 with the standard tempo of 500000 gives precisely 140 ticks a second
+  with no rounding anywhere.
+
+  Looping is done by asking MCI to notify the game window when the song ends
+  and starting it again.  A PWAD that holds plain MIDI instead of MUS is
+  passed through untouched.
 
 **Networking.**  IBM TCP/IP, over the same UDP packets and the same port
   (5029) as every other DOOM, so this can play against linuxxdoom.
@@ -102,19 +170,33 @@ How it works
   SO32DLL and TCP32DLL are loaded by name, and only when -net is actually
   used.  A single player game on a machine with no TCP/IP never notices.
 
-**No hard dependencies.**  The upshot of all that name-loading is that
-DOOM.EXE imports nothing but the base system:
+**No hard dependencies.**  DIVE, MMPM/2 and TCP/IP are all loaded by name at
+run time rather than imported, so DOOM.EXE imports nothing but the base
+system:
 
     DOSCALLS  NLS  KBDCALLS  VIOCALLS  PMWIN  PMGPI
 
-It loads and plays on a bare OS/2 2.0, and picks up DIVE, sound and
-networking on any machine that has them.
+It loads and plays on a bare OS/2 2.0, and picks up video acceleration, sound,
+music and networking on any machine that has them.
 
   One trap worth recording, since it is invisible until you look: calling
   htons() or htonl() would have put an import on TCPIP32.DLL into the
   executable and undone the whole arrangement.  They are real functions in
   OS/2's library, not macros.  I_NET.C defines its own, which is what the
   Linux original did too -- "for some odd reason", as its comment has it.
+
+**Behaving itself.**  Two things beyond the game proper.
+
+  Alt-Tab away and DOOM stops burning a processor: it throttles to about
+  twenty frames a second while the window is not active.  The game clock is
+  deliberately left running, so the tics still pass at the right rate, and a
+  network game is never slowed at all.
+
+  If the game traps while it has the mouse pointer hidden, an exception
+  handler registered in main() puts the pointer back before OS/2 gets on with
+  its usual popup.  Hiding the pointer is a system-wide, reference-counted
+  state; leaving the desktop without one over a bug in a game would be a
+  rotten thing to do.
 
 
 Why it is a VIO program
@@ -137,6 +219,11 @@ of "sys os2v2" -- and it builds as a pure PM application with no source
 change at all.  Everything printed before the window opens is then lost,
 which is why I_Error also puts its message in a message box.
 
+One thing to know if you do make that change: D_DoomMain calls getchar() to
+make you press Enter after the "this version has been modified" banner when
+-file is used.  In the VIO build that is fine.  As a pure PM binary it would
+wait for ever with no visible prompt.
+
 
 Changes to the engine
 ---------------------
@@ -145,11 +232,13 @@ The engine sources here are id's, and the diff against linuxdoom-1.10 is
 deliberately small.  In full:
 
   d_main.c    An __OS2__ branch alongside the NORMALUNIX one for the WAD
-              search paths.  Same DOOMWADDIR behaviour; what changes is that
-              there is no $HOME to insist on -- OS/2 has no per-user home
-              directory that is guaranteed to exist, and refusing to start
-              without one would stop the game on an ordinary Warp desktop.
-              The configuration goes in DEFAULT.CFG beside the WADs.
+              search paths, and a call into D_OS2FindIWAD before the
+              filename tests.  Same DOOMWADDIR behaviour; what changes is
+              that there is no $HOME to insist on -- OS/2 has no per-user
+              home directory that is guaranteed to exist, and refusing to
+              start without one would stop the game on an ordinary Warp
+              desktop.  The configuration goes in DEFAULT.CFG beside the
+              WADs.
 
               <direct.h> for mkdir, and the -cdrom call given the one
               argument OS/2's mkdir takes.
@@ -165,6 +254,9 @@ deliberately small.  In full:
 
   m_menu.c    O_BINARY on the savegame header read, for the same reason.
 
+  m_misc.c    Four entries added to the defaults table for the window
+              position, under __OS2__.
+
   m_bbox.h    <values.h> is a Unix header.  doomtype.h already defines MAXINT
               and MININT for every platform that is not Linux.
 
@@ -178,21 +270,45 @@ deliberately small.  In full:
   i_main.c, i_system.c, i_video.c, i_sound.c, i_net.c
               Replaced entirely.  These are the port.
 
-  os2doom.h   New: the PM handles and the two services -- morphing, and an
-              error box -- that more than one platform module needs.
+  os2doom.h   New: the PM handles, and the services more than one platform
+              module needs.
+
+  d_os2iwd.c  New: finding and identifying the IWAD.
+
+  i_os2mus.c  New: MUS to MIDI, and the MCI sequencer.
 
 Everything else is byte-identical to the release.
+
+
+What has been tested
+--------------------
+
+The parts that could be tested without an OS/2 machine, have been.  Both of
+these compile the real module -- not a copy of it -- against a small shim and
+run it on the build host:
+
+  * IWAD identification, against synthetic WADs built for the purpose.  Nine
+    checks: each game mode from its lumps, TNT and Plutonia by name, a retail
+    IWAD named DOOM.WAD correctly identified as retail rather than
+    registered, and PWADs, map-less IWADs and missing files all refused.
+
+  * MUS to MIDI conversion, against scores built note by note.  Ten checks:
+    note on and off, volume carried over when the byte is omitted, the
+    channel 9/15 percussion swap in both directions, program changes,
+    controller mapping, pitch bend centring on 8192, multi-byte variable
+    length delays, refusal of non-MUS data, and the shape of the finished
+    file.
+
+The executable itself has been verified to be a proper LX binary for the
+80386 under OS/2, flagged windowable-VIO, importing only the six base DLLs
+listed above.  The whole tree compiles clean at -w3.
 
 
 What has not been tested
 ------------------------
 
-The port compiles and links clean, and the executable has been verified to be
-a proper LX binary for the 80386 under OS/2, flagged windowable-VIO, with the
-import list above.  Nothing has been run: there is no OS/2 machine here.
-
-The things most likely to want attention on first run, in the order I would
-check them:
+Everything that needs the machine.  The things most likely to want attention,
+in the order I would check them:
 
   1. The DIVE image orientation.  SETUP_BLITTER's fInvert is FALSE, which
      says the source is stored top-down -- which is how DOOM has always held
@@ -209,13 +325,17 @@ check them:
      code, so it should cope either way, but this is the part most worth
      watching.
 
-  3. DART buffer sizes.  MMPM/2 is free to hand back a different buffer size
-     from the one asked for.  The callback fills whole mixes and reports how
-     much it wrote, and refuses to start if the buffer is too small to hold
-     even one -- but the size it actually gives is printed at startup, and is
-     worth a glance.
+  3. The music.  The conversion is tested; what is not is whether MMPM/2's
+     sequencer is happy being handed a file and told to loop, and whether the
+     MCI_NOTIFY message arrives as expected.  If music plays once and stops,
+     that is where to look.  -nomusic turns it off.
 
-  4. The socket entry point names in SO32DLL and TCP32DLL.  If one is wrong,
+  4. DART buffer sizes.  MMPM/2 is free to hand back a different buffer size
+     from the one asked for.  The callback fills whole mixes and refuses to
+     start if the buffer is too small to hold even one, and the size actually
+     given is printed at startup.
+
+  5. The socket entry point names in SO32DLL and TCP32DLL.  If one is wrong,
      -net fails at startup with a clear message and single player is
      unaffected.
 
@@ -223,17 +343,22 @@ check them:
 Adding an icon
 --------------
 
-There is none.  The window gets the default program icon.
+There is none, and the window gets the default program icon.
 
 To add one, put a genuine OS/2 icon -- saved by OS/2's own ICONEDIT, or taken
-from \OS2\BITMAP -- in a resource script, compile it with "wrc -bt=os2 -r",
-and bind it into DOOM.EXE with a second wrc pass, then give the frame
-FCF_ICON in I_InitGraphics.
+from \OS2\BITMAP -- in RES\DOOM.OS2.  MKOS2.CMD compiles and binds RES\DOOM.RC
+when that file is present and skips the step silently when it is not.
 
 Do not feed wrc a Windows .ICO for an OS/2 target.  It accepts it, exits 0,
-and embeds it verbatim; PM then rejects it, WinLoadPointer fails, that fails
-FCF_ICON, and that fails the whole WinCreateStdWindow with PM error 0x1034,
-PMERR_INVALID_RESOURCE_FORMAT.
+and embeds it verbatim; PM then cannot load it, and you get no icon and no
+error anywhere to say why.
+
+The icon is loaded with WinLoadPointer and applied with WM_SETICON rather
+than asked for through FCF_ICON in the frame flags.  That is deliberate: PM
+validates an icon resource strictly, and with FCF_ICON a resource it dislikes
+fails the whole WinCreateStdWindow with PMERR_INVALID_RESOURCE_FORMAT and no
+window at all.  Done this way the worst a bad icon can do is leave the
+default one in place.
 
 
 Licence

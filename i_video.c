@@ -81,6 +81,10 @@ rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 
 #define DOOM_WINDOW_CLASS	"DoomWindowClass"
 
+// Resource id of the window icon.  Only meaningful if RESDOOM.RC was
+// compiled and bound into the executable -- see MKOS2.CMD.
+#define ID_DOOM_ICON		1
+
 //
 // The Presentation Manager handles, shared with the rest of the port.
 //
@@ -164,6 +168,18 @@ static byte	divepal[256*4];
 //  Input state.
 //
 static boolean	grabMouse	= true;		// -nograbmouse turns it off
+
+//
+// use_mouse from DEFAULT.CFG.
+//
+// This is the only place it can possibly be honoured.  Nothing in the engine
+// consults it: G_Responder feeds every ev_mouse it is given straight into
+// mousex/mousey, and G_BuildTiccmd uses those unconditionally.  On DOS the
+// setting decided whether the mouse driver was initialised at all, so the
+// events simply never existed.  Here the platform layer has to be the one
+// that does not send them.
+//
+extern int	usemouse;
 static boolean	mouseGrabbed	= false;	// ...and it is grabbed now
 static boolean	pointerHidden	= false;
 static int	mouseButtons	= 0;
@@ -172,6 +188,79 @@ static int	mouseButtons	= 0;
 // the window loses the focus.  Without this, Alt-Tabbing away while running
 // forward leaves the player running forward for ever.
 static byte	keyIsDown[256];
+
+// Whether the window currently has the focus.  I_FinishUpdate throttles the
+// game right down when it does not: DOOM's loop renders as fast as the
+// machine allows, and there is no reason to spend a whole processor drawing
+// frames into a window nobody is looking at.
+static boolean	windowActive	= true;
+
+// -keydebug: print every keystroke this window is handed.  Keyboard trouble
+// on OS/2 is nearly always a question of which window holds the input focus,
+// and that question cannot be answered from inside the game -- either the
+// messages arrive or they do not.  This makes the difference visible.
+static boolean	keydebug	= false;
+
+// Set while the window procedure is running, so that the shutdown path can
+// tell whether it is being called from inside a dispatched message.  Tearing
+// the message queue down from in there wedges the process.
+static boolean	inWndProc	= false;
+
+// The close box was clicked.  Acted on by the pump once the dispatch that
+// set it has unwound -- see I_OS2_PumpMessages.
+static boolean	os2_quitRequested = false;
+
+//
+// Window shape.
+//
+// DOOM's 320x200 picture is meant to be seen as 4:3 -- the pixels on the
+// hardware it was written for are not square, they are half again as tall as
+// they are wide.  Blitting it into a window of 320x200 square pixels makes
+// everything a fifth too short, which is why the window opens at 320x240
+// (times the -2 or -3 multiplier) and why the frame is held to 4:3 while it
+// is being resized.
+//
+// -stretch turns the constraint off and lets the picture take whatever shape
+// the window is given.
+//
+static boolean	stretchToWindow	= false;
+static PFNWP	pfnFrameProc	= NULL;		// the frame's own procedure
+
+// Remembered across runs through DEFAULT.CFG.  M_MISC.C has these in its
+// defaults table; they are updated from WM_SIZE and WM_MOVE, so whatever the
+// window looks like when the game exits is what it looks like next time.
+// A width of zero means "nothing saved yet", and the defaults apply.
+int		os2_window_x	= 0;
+int		os2_window_y	= 0;
+int		os2_window_w	= 0;
+int		os2_window_h	= 0;
+
+
+//
+// RememberWindowPos
+//
+// Records where the frame is, for DEFAULT.CFG.  Deliberately ignores a
+// minimised or maximised window: restoring DOOM to a zero-sized icon next
+// time would be a poor trick.
+//
+static void RememberWindowPos (void)
+{
+    SWP		swp;
+
+    if (os2_hwndFrame == NULLHANDLE)
+	return;
+
+    if (!WinQueryWindowPos (os2_hwndFrame, &swp))
+	return;
+
+    if ((swp.fl & (SWP_MINIMIZE | SWP_MAXIMIZE)) || swp.cx <= 0 || swp.cy <= 0)
+	return;
+
+    os2_window_x = swp.x;
+    os2_window_y = swp.y;
+    os2_window_w = swp.cx;
+    os2_window_h = swp.cy;
+}
 
 
 //
@@ -218,6 +307,26 @@ static const byte scantokey[128] =
     /* 70 */  0,0,0,0, 0,0,0,0,
     /* 78 */  0,0,0,0, 0,0,0,0
 };
+
+
+//
+// I_OS2_KeyForScancode
+//
+// The same table, for M_MISC.C.
+//
+// A DEFAULT.CFG written by the DOS setup program stores its key bindings as
+// raw PC scan codes, because that is what the DOS keyboard handler dealt in.
+// This port's keys are DOOM's own codes, so such a file binds turn-right to
+// scan code 77 -- which this build reads as the letter M.  The config loader
+// puts those back through here.  Returns 0 for a scan code with no DOOM key.
+//
+int I_OS2_KeyForScancode (int scan)
+{
+    if (scan < 0 || scan > 127)
+	return 0;
+
+    return scantokey[scan];
+}
 
 
 //
@@ -307,6 +416,24 @@ static void I_CentrePointer (void)
     WinSetPointerPos (HWND_DESKTOP, pt.x, pt.y);
 }
 
+//
+// I_WantGrab
+//
+// Whether the pointer should be held captive right now.
+//
+// The menu test is what gives the player a way out.  Grabbing the pointer
+// hides it and pins it to the middle of the window, and without some
+// reliable way to get it back the only escape is to guess that Alt-Tab still
+// works.  Pressing Escape brings up the menu and the pointer comes straight
+// back, which is the behaviour anyone would try first.
+//
+static boolean I_WantGrab (void)
+{
+    return (grabMouse && usemouse && windowActive && !menuactive)
+	   ? true : false;
+}
+
+
 static void I_SetGrab (boolean on)
 {
     if (on == mouseGrabbed)
@@ -334,6 +461,40 @@ static void I_SetGrab (boolean on)
 
 
 //
+// I_OS2_ExceptionHandler
+//
+// See os2doom.h.  Put the pointer back, then get out of the way.
+//
+ULONG APIENTRY I_OS2_ExceptionHandler (PEXCEPTIONREPORTRECORD	 report,
+				       PEXCEPTIONREGISTRATIONRECORD reg,
+				       PCONTEXTRECORD		 ctx,
+				       PVOID			 dummy)
+{
+    // UNUSED.
+    reg = 0;
+    ctx = 0;
+    dummy = 0;
+
+    // Unwinding is not a fault -- it is the tidying up afterwards, and it
+    // runs this handler again on the way past.  Only act on the real thing.
+    if (report
+	&& !(report->fHandlerFlags & (EH_UNWINDING | EH_EXIT_UNWIND
+				      | EH_NESTED_CALL)))
+    {
+	if (pointerHidden)
+	{
+	    WinShowPointer (HWND_DESKTOP, TRUE);
+	    pointerHidden = false;
+	}
+    }
+
+    // Never pretend to have handled it.  OS/2 goes on to do whatever it
+    // would have done -- popup, dump, terminate -- exactly as before.
+    return XCPT_CONTINUE_SEARCH;
+}
+
+
+//
 // I_ReleaseAllKeys
 //
 // Post a key-up for everything still held.  Called when the window loses the
@@ -357,6 +518,33 @@ static void I_ReleaseAllKeys (void)
     }
 
     mouseButtons = 0;
+}
+
+
+//
+// I_OS2_WindowActivated
+//
+// The window has come to the front, or gone from it.
+//
+// Presentation Manager sends WM_ACTIVATE to the frame window rather than to
+// the client, which is why this is a function and not simply a case in the
+// client's window procedure: the frame's subclass is the only place that
+// sees it.  Two things hang on knowing: the pointer must not stay captured
+// by a window the player has switched away from, and a key that was held
+// down at the moment of switching must be let go, or the player comes back
+// to find themselves still walking forward.
+//
+static void I_OS2_WindowActivated (boolean active)
+{
+    windowActive = active;
+
+    if (active)
+	I_SetGrab (I_WantGrab ());
+    else
+    {
+	I_SetGrab (false);
+	I_ReleaseAllKeys ();
+    }
 }
 
 
@@ -500,8 +688,8 @@ static void GpiUpdate (void)
 //
 // The window procedure.
 //
-static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
-				     MPARAM mp1, MPARAM mp2)
+static MRESULT EXPENTRY DoomWndProcInner (HWND hwnd, ULONG msg,
+					  MPARAM mp1, MPARAM mp2)
 {
     event_t	event;
 
@@ -520,6 +708,16 @@ static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
 	USHORT	usch    = SHORT1FROMMP(mp2);
 	USHORT	usvk    = SHORT2FROMMP(mp2);
 	int	key;
+
+	// -keydebug: what PM said, and what it became.  If this prints
+	// nothing while keys are being pressed, the keystrokes are not
+	// reaching this window at all and no amount of translation will
+	// help -- go and look at the focus.
+	if (keydebug)
+	    printf ("WM_CHAR flags=%04x scan=%02x vk=%02x ch=%02x -> key=%02x\n",
+		    (unsigned)fsflags, (unsigned)scan, (unsigned)usvk,
+		    (unsigned)usch,
+		    (unsigned)I_TranslateKey (fsflags, usch, usvk, scan));
 
 	// A key held down repeats.  DOOM wants one keydown per press for the
 	// menus, and the game itself only cares whether a key is down at all,
@@ -563,15 +761,30 @@ static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
 			msg == WM_BUTTON2DOWN ||
 			msg == WM_BUTTON3DOWN);
 
+	// Clicking in the window is how the player asks for the keyboard --
+	// and, when the mouse is in use, the pointer -- back.
+	//
+	// This must happen BEFORE use_mouse is consulted.  Mouse messages
+	// arrive at whatever window the pointer is over, but keystrokes only
+	// go to the window that holds the focus, so a player using the
+	// keyboard alone still has to click on the window once to start
+	// playing.  Dropping that click here because the mouse is switched
+	// off is what left the keyboard dead: the one thing that ever gave
+	// this window the focus was behind the very setting that says the
+	// player intends to use the keyboard for everything.
+	if (down)
+	    WinSetFocus (HWND_DESKTOP, os2_hwndClient);
+
+	// use_mouse off means the mouse does not drive the game at all, so
+	// the buttons are not the game's business either -- a player who
+	// turned the mouse off would otherwise still be firing with it.
+	if (!usemouse)
+	    break;
+
 	if (down)
 	{
 	    mouseButtons |= bit;
-
-	    // Clicking in the window is how the player asks for the mouse
-	    // back after Alt-Tabbing away.
-	    WinSetFocus (HWND_DESKTOP, os2_hwndClient);
-	    if (grabMouse)
-		I_SetGrab (true);
+	    I_SetGrab (I_WantGrab ());
 	}
 	else
 	    mouseButtons &= ~bit;
@@ -614,29 +827,27 @@ static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
       //
       // Focus and size.
       //
+      // WM_ACTIVATE is delivered to the FRAME, not to the client, so in
+      // practice this case never runs -- the frame's subclass calls
+      // I_OS2_WindowActivated directly.  It is kept because a client window
+      // is entitled to the message and being handed it twice does no harm.
+      //
       case WM_ACTIVATE:
-	if (SHORT1FROMMP(mp1))
-	{
-	    if (grabMouse)
-		I_SetGrab (true);
-	}
-	else
-	{
-	    I_SetGrab (false);
-	    I_ReleaseAllKeys ();
-	}
+	I_OS2_WindowActivated (SHORT1FROMMP(mp1) ? true : false);
 	break;
 
       case WM_SIZE:
 	client_cx = SHORT1FROMMP(mp2);
 	client_cy = SHORT2FROMMP(mp2);
 	SetupBlitter ();
+	RememberWindowPos ();
 	if (mouseGrabbed)
 	    I_CentrePointer ();
 	break;
 
       case WM_MOVE:
 	SetupBlitter ();
+	RememberWindowPos ();
 	break;
 
       //
@@ -674,10 +885,42 @@ static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
 	// PM erase it first only makes the picture flicker.
 	return (MRESULT)FALSE;
 
+      //
+      // MMPM/2 has finished playing the music.
+      //
+      // The value is spelled out rather than pulled in from <os2me.h>: that
+      // header brings os2medef.h with it, which declares a type called
+      // VERSION and collides with doomdef.h's enumerator of the same name.
+      // I_SOUND.C and I_OS2MUS.C have to deal with that; there is no reason
+      // for this file to as well, for one constant.
+      case 0x0500:				// MM_MCINOTIFY
+	I_OS2_MusicNotify (SHORT1FROMMP(mp1));
+	return 0;
+
+      //
+      // A sound block has been played, on a machine whose audio driver has no
+      // DART and is being fed by a playlist instead.  Spelled out for the
+      // same reason as MM_MCINOTIFY above.
+      //
+      case 0x0504:				// MM_MCIPLAYLISTMESSAGE
+	I_OS2_PlaylistNotify ((ULONG)LONGFROMMP(mp2));
+	return 0;
+
       case WM_CLOSE:
-	// Never come back: I_Quit saves the configuration and exits.
+	//
+	// Quitting cannot be done from here.
+	//
+	// I_Quit ends in I_ShutdownGraphics, which destroys this window and
+	// then the message queue -- and this code is running inside a message
+	// dispatched from that very queue.  Pulling both out from under the
+	// dispatch leaves the process wedged: it never reaches its exit, so
+	// the session it was started from never closes either.
+	//
+	// So the click is only recorded.  The pump acts on it once the
+	// dispatch has unwound and the stack is the game's own again.
+	//
 	I_SetGrab (false);
-	I_Quit ();
+	os2_quitRequested = true;
 	return 0;
 
       default:
@@ -685,6 +928,30 @@ static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
     }
 
     return WinDefWindowProc (hwnd, msg, mp1, mp2);
+}
+
+
+//
+// The window procedure proper: nothing but a marker around the real one.
+//
+// I_Error can be reached from inside a dispatched message -- a DIVE failure
+// during a repaint, say -- and it shuts the graphics down on its way out.
+// Destroying this window, or the queue this message came from, while that
+// message is still being dispatched is what wedges the process.  The flag
+// lets I_ShutdownGraphics see that it is in that position and leave those
+// two steps to the exit, which is moments away in any case.
+//
+static MRESULT EXPENTRY DoomWndProc (HWND hwnd, ULONG msg,
+				     MPARAM mp1, MPARAM mp2)
+{
+    MRESULT	mr;
+    boolean	wasIn = inWndProc;
+
+    inWndProc = true;
+    mr = DoomWndProcInner (hwnd, msg, mp1, mp2);
+    inWndProc = wasIn;
+
+    return mr;
 }
 
 
@@ -700,6 +967,14 @@ void I_OS2_PumpMessages (void)
 
     while (WinPeekMsg (os2_hab, &qmsg, NULLHANDLE, 0, 0, PM_REMOVE))
 	WinDispatchMsg (os2_hab, &qmsg);
+
+    // The close box, acted on now that the dispatch has unwound.  I_Quit
+    // does not come back.
+    if (os2_quitRequested)
+    {
+	os2_quitRequested = false;
+	I_Quit ();
+    }
 }
 
 
@@ -718,6 +993,12 @@ void I_StartFrame (void)
 void I_StartTic (void)
 {
     I_OS2_PumpMessages ();
+
+    // Re-decide the grab every frame rather than only when a message
+    // happens to arrive.  menuactive changes inside the game, not inside the
+    // window procedure, so this is the only place that notices the player
+    // pressing Escape and gives the pointer back.
+    I_SetGrab (I_WantGrab ());
 }
 
 
@@ -758,6 +1039,20 @@ void I_FinishUpdate (void)
     // loading a level, say -- because it is the only thing between DOOM and
     // the desktop deciding the window has stopped responding.
     I_OS2_PumpMessages ();
+
+    // Nobody is looking: stop burning a processor on it.
+    //
+    // DOOM renders as fast as the machine will let it, so a window that has
+    // been Alt-Tabbed away from goes on consuming everything the scheduler
+    // will give it.  Sleeping here caps the loop at about twenty frames a
+    // second and hands the time back to whatever the user actually switched
+    // to.
+    //
+    // The game clock is deliberately left alone.  I_GetTime keeps running,
+    // so the tics still pass at the right rate and a network game stays in
+    // step -- which is also why a network game is never slowed at all.
+    if (!windowActive && !netgame)
+	DosSleep (50);
 
     if (useDive)
     {
@@ -855,6 +1150,57 @@ static boolean LoadDive (void)
 
 
 //
+// FrameWndProc
+//
+// The frame's own window procedure, with one message intercepted.
+//
+// WM_ADJUSTWINDOWPOS arrives while a border is being dragged, carrying the
+// size PM is about to apply.  Correcting it here is what holds the picture
+// to 4:3 while the window is resized.  Note that it changes nothing about
+// the blitter, which goes on filling whatever the client area turns out to
+// be -- which is exactly why this is the safe place to do it.
+//
+static MRESULT EXPENTRY FrameWndProc (HWND hwnd, ULONG msg,
+				      MPARAM mp1, MPARAM mp2)
+{
+    // Activation is a frame message; the client is never sent it.
+    if (msg == WM_ACTIVATE)
+	I_OS2_WindowActivated (SHORT1FROMMP(mp1) ? true : false);
+
+    if (msg == WM_ADJUSTWINDOWPOS && !stretchToWindow)
+    {
+	PSWP	pswp = (PSWP)PVOIDFROMMP(mp1);
+
+	if (pswp
+	    && (pswp->fl & SWP_SIZE)
+	    && !(pswp->fl & (SWP_MINIMIZE | SWP_MAXIMIZE | SWP_RESTORE)))
+	{
+	    RECTL	rcl;
+	    LONG	chrome_cx, chrome_cy;
+	    LONG	client_w;
+
+	    // How much of the frame is title bar and border: ask what frame
+	    // would be needed to hold a client area of nothing at all.
+	    rcl.xLeft = rcl.yBottom = rcl.xRight = rcl.yTop = 0;
+	    WinCalcFrameRect (hwnd, &rcl, FALSE);
+	    chrome_cx = rcl.xRight - rcl.xLeft;
+	    chrome_cy = rcl.yTop   - rcl.yBottom;
+
+	    client_w = pswp->cx - chrome_cx;
+
+	    // Height follows width.  Dragging a corner then feels like
+	    // setting how wide the picture is, which is the dimension people
+	    // reach for.
+	    if (client_w > 0)
+		pswp->cy = client_w * 3 / 4 + chrome_cy;
+	}
+    }
+
+    return pfnFrameProc (hwnd, msg, mp1, mp2);
+}
+
+
+//
 // I_InitGraphics
 //
 void I_InitGraphics (void)
@@ -865,7 +1211,9 @@ void I_InitGraphics (void)
     PVOID		mem;
     LONG		scr_cx, scr_cy;
     LONG		win_cx, win_cy;
+    LONG		win_x, win_y;
     LONG		frame_cx, frame_cy;
+    boolean		explicitsize = false;
 
     if (!firsttime)
 	return;
@@ -874,15 +1222,41 @@ void I_InitGraphics (void)
     // -2 and -3 no longer pick a pixel doubling routine -- the blitter
     // scales -- but they still say how big the window should open.
     if (M_CheckParm ("-2"))
+    {
 	multiply = 2;
+	explicitsize = true;
+    }
     if (M_CheckParm ("-3"))
+    {
 	multiply = 3;
+	explicitsize = true;
+    }
 
     if (M_CheckParm ("-nograbmouse"))
 	grabMouse = false;
 
-    win_cx = SCREENWIDTH  * multiply;
-    win_cy = SCREENHEIGHT * multiply;
+    if (M_CheckParm ("-stretch"))
+	stretchToWindow = true;
+
+    if (M_CheckParm ("-keydebug"))
+	keydebug = true;
+
+    //
+    // The window opens 4:3, not 320x200.
+    //
+    // DOOM's picture is 320x200, but it was drawn to be seen on a 4:3
+    // screen, where the pixels are half again as tall as they are wide.
+    // Shown at 320x200 on square pixels everything comes out a fifth too
+    // short -- most obvious on the faces in the status bar and on anything
+    // round.  320x240 is the same picture in the proportions it was drawn
+    // for, and the blitter stretches it there for nothing.
+    //
+    // -stretch gives the old behaviour back and lets the window be any
+    // shape at all.
+    //
+    win_cx = SCREENWIDTH * multiply;
+    win_cy = stretchToWindow ? SCREENHEIGHT * multiply
+			     : SCREENWIDTH * multiply * 3 / 4;
 
     //
     // Become a Presentation Manager process and open the window.
@@ -919,6 +1293,28 @@ void I_InitGraphics (void)
     if (os2_hwndFrame == NULLHANDLE)
 	I_Error ("I_InitGraphics: WinCreateStdWindow failed.");
 
+    // Take over the frame's messages, for the 4:3 constraint above.
+    pfnFrameProc = WinSubclassWindow (os2_hwndFrame, FrameWndProc);
+
+    //
+    // The window icon, if this DOOM.EXE was built with one.
+    //
+    // Loaded and applied by hand rather than asked for with FCF_ICON in the
+    // frame flags.  PM validates an icon resource strictly, and if it does
+    // not like it, FCF_ICON fails -- and that fails the whole
+    // WinCreateStdWindow, with PMERR_INVALID_RESOURCE_FORMAT and no window
+    // at all.  Done this way the worst a bad or missing icon can do is leave
+    // the default one in place, which is what happens when no resource was
+    // bound in.
+    //
+    {
+	HPOINTER	hptr = WinLoadPointer (HWND_DESKTOP, NULLHANDLE,
+					       ID_DOOM_ICON);
+	if (hptr != NULLHANDLE)
+	    WinSendMsg (os2_hwndFrame, WM_SETICON,
+			MPFROMLONG(hptr), (MPARAM)0);
+    }
+
     // Size the frame so that the *client* comes out at the size asked for.
     // Sizing the frame directly would lose the title bar and border out of
     // the picture, and the image would be squashed by however many pixels
@@ -935,11 +1331,63 @@ void I_InitGraphics (void)
     scr_cx = WinQuerySysValue (HWND_DESKTOP, SV_CXSCREEN);
     scr_cy = WinQuerySysValue (HWND_DESKTOP, SV_CYSCREEN);
 
+    win_x = (scr_cx - frame_cx) / 2;
+    win_y = (scr_cy - frame_cy) / 2;
+
+    //
+    // Where it was last time, if it has been here before.
+    //
+    // Clamped to the screen, because a position saved on a 1024x768 desktop
+    // would otherwise put the window somewhere unreachable when the same
+    // DEFAULT.CFG is used at 640x480 -- and a window whose title bar is off
+    // the screen cannot be dragged back.
+    //
+    // ...unless the size was asked for on the command line.  A saved
+    // geometry that silently overrode -2 and -3 would make them look broken:
+    // they would work once, and then never again once the window had been
+    // saved at some other size.
+    if (!explicitsize && os2_window_w > 0 && os2_window_h > 0)
+    {
+	frame_cx = os2_window_w;
+	frame_cy = os2_window_h;
+	win_x    = os2_window_x;
+	win_y    = os2_window_y;
+
+	if (frame_cx > scr_cx)	frame_cx = scr_cx;
+	if (frame_cy > scr_cy)	frame_cy = scr_cy;
+
+	if (win_x + frame_cx > scr_cx)	win_x = scr_cx - frame_cx;
+	if (win_y + frame_cy > scr_cy)	win_y = scr_cy - frame_cy;
+	if (win_x < 0)			win_x = 0;
+	if (win_y < 0)			win_y = 0;
+    }
+
     WinSetWindowPos (os2_hwndFrame, HWND_TOP,
-		     (scr_cx - frame_cx) / 2,
-		     (scr_cy - frame_cy) / 2,
+		     win_x, win_y,
 		     frame_cx, frame_cy,
 		     SWP_SIZE | SWP_MOVE | SWP_ACTIVATE | SWP_SHOW);
+
+    //
+    // And say so twice.
+    //
+    // SWP_ACTIVATE above raises the window, but this process began life as a
+    // text mode program and morphed into a Presentation Manager one on the
+    // way here (see I_OS2_MorphToPM).  The session it was started from is
+    // still there, still holding a window of its own, and the keyboard
+    // follows whichever of the two the desktop thinks is in front.  Asking
+    // outright settles it: the frame becomes the active window, and the
+    // client -- which is what the window procedure below belongs to -- takes
+    // the input focus.  Without the focus, mouse messages still arrive,
+    // because those go to whatever the pointer is over, but not one
+    // keystroke does.
+    //
+    WinSetActiveWindow (HWND_DESKTOP, os2_hwndFrame);
+    WinSetFocus (HWND_DESKTOP, os2_hwndClient);
+
+    if (keydebug)
+	printf ("I_InitGraphics: focus is %s the game window.\n",
+		(WinQueryFocus (HWND_DESKTOP) == os2_hwndClient)
+		    ? "on" : "NOT on");
 
     client_cx = win_cx;
     client_cy = win_cy;
@@ -1012,8 +1460,7 @@ void I_InitGraphics (void)
 	gpibmi.hdr.cBitCount = 8;
     }
 
-    if (grabMouse)
-	I_SetGrab (true);
+    I_SetGrab (I_WantGrab ());
 }
 
 
@@ -1046,14 +1493,17 @@ void I_ShutdownGraphics (void)
 	hmodDive = NULLHANDLE;
     }
 
-    if (os2_hwndFrame != NULLHANDLE)
+    // Only when this is not being called from inside a dispatched message:
+    // see the note on DoomWndProc.  Skipping them costs nothing, because
+    // ending the process releases both anyway.
+    if (os2_hwndFrame != NULLHANDLE && !inWndProc)
     {
 	WinDestroyWindow (os2_hwndFrame);
 	os2_hwndFrame  = NULLHANDLE;
 	os2_hwndClient = NULLHANDLE;
     }
 
-    if (os2_hmq != NULLHANDLE)
+    if (os2_hmq != NULLHANDLE && !inWndProc)
     {
 	WinDestroyMsgQueue (os2_hmq);
 	os2_hmq = NULLHANDLE;

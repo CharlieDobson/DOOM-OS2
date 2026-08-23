@@ -1586,12 +1586,45 @@ void G_DoPlayDemo (void)
 	 
     gameaction = ga_nothing; 
     demobuffer = demo_p = W_CacheLumpName (defdemoname, PU_STATIC); 
+#ifdef __OS2__
+    {
+      //
+      // The demos inside a retail DOOM.WAD were recorded by version 1.9 and
+      // are stamped 109.  This source release calls itself 110, so upstream
+      // refuses every demo the game ships with -- and since the title screen
+      // cycles through them for ever, the refusal is printed over and over
+      // for as long as the game sits at the menu.
+      //
+      // Nothing about the demo format changed between the two: 1.10 is 1.9's
+      // engine renumbered for the source release.  So 109 is played as one of
+      // our own.  Anything older is genuinely a different format -- the
+      // header grew four bytes at 1.4 -- and is still refused, but only
+      // aloud once, so that a mismatched PWAD says its piece and then stops.
+      //
+      static boolean	moaned = false;
+      int		demover = *demo_p++;
+
+      if (demover != VERSION && demover != 109)
+      {
+	if (!moaned)
+	{
+	  fprintf (stderr, "Demo is from a different game version"
+			   " (%i, this is %i) -- skipping demos.\n",
+		   demover, (int)VERSION);
+	  moaned = true;
+	}
+	gameaction = ga_nothing;
+	return;
+      }
+    }
+#else
     if ( *demo_p++ != VERSION)
     {
       fprintf( stderr, "Demo is from a different game version!\n");
       gameaction = ga_nothing;
       return;
     }
+#endif
     
     skill = *demo_p++; 
     episode = *demo_p++; 

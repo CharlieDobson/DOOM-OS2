@@ -1,0 +1,19 @@
+/* Resources for DOOM/2.
+ *
+ * There is exactly one, and it is optional: the window icon.
+ *
+ * DOOM.OS2 must be a GENUINE OS/2 icon -- one saved by OS/2's own ICONEDIT,
+ * or lifted from \OS2\BITMAP on the target machine.  Do NOT put a Windows
+ * .ICO here.  wrc accepts one for an OS/2 target, exits 0, and embeds it
+ * verbatim as an RT_POINTER; PM then cannot load it, and you get no icon and
+ * no error anywhere to say why.
+ *
+ * This whole file is skipped by MKOS2.CMD when RES\DOOM.OS2 is not present,
+ * and I_VIDEO.C loads the icon with WinLoadPointer rather than asking for it
+ * through FCF_ICON, so a missing or malformed icon costs nothing worse than
+ * the default program icon.
+ */
+
+#define ID_DOOM_ICON	1
+
+ICON ID_DOOM_ICON	"DOOM.OS2"

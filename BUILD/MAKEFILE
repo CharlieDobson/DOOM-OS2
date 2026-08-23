@@ -1,0 +1,72 @@
+#=============================================================================
+#
+#  DOOM for OS/2 -- wmake makefile, for building ON OS/2.
+#
+#  MKOS2.CMD is the cross build: it runs on a Windows machine and produces an
+#  OS/2 executable.  This is the other way round -- it runs on the OS/2 box
+#  itself, with Open Watcom's OS/2 hosted tools, and needs nothing else.
+#
+#      wmake
+#      wmake clean
+#
+#  Sources are one level up; objects stay here, as they do for the cross
+#  build, so the two never tread on each other's output.
+#
+#  If wmake is not on the PATH, run Open Watcom's OS2VARS.CMD first.
+#
+#=============================================================================
+
+SRC = ..
+
+#  See MKOS2.CMD for what each of these is for and why it is not optional.
+#  In short: -bm because MMPM/2 calls the sound mixer back on a thread of its
+#  own, -dNORMALUNIX because OS/2 with Open Watcom has the POSIX headers DOOM
+#  expects and the desktop key bindings it wants, and -w1 because this is
+#  1997 code written for gcc.
+CFLAGS = -bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -zq -w1 -e25 -i=$(SRC)
+
+#  1 MB.  R_RenderBSPNode recurses down the BSP tree, and W_AddFile takes the
+#  whole lump directory on the stack with alloca.
+STACK = 1048576
+
+PLATFORM = i_main.obj i_system.obj i_video.obj i_sound.obj i_net.obj &
+           d_os2iwd.obj i_os2mus.obj i_os2log.obj
+
+ENGINE = doomdef.obj doomstat.obj dstrings.obj tables.obj f_finale.obj &
+         f_wipe.obj d_main.obj d_net.obj d_items.obj g_game.obj m_menu.obj &
+         m_misc.obj m_argv.obj m_bbox.obj m_fixed.obj m_swap.obj &
+         m_cheat.obj m_random.obj am_map.obj p_ceilng.obj p_doors.obj &
+         p_enemy.obj p_floor.obj p_inter.obj p_lights.obj p_map.obj &
+         p_maputl.obj p_plats.obj p_pspr.obj p_setup.obj p_sight.obj &
+         p_spec.obj p_switch.obj p_mobj.obj p_telept.obj p_tick.obj &
+         p_saveg.obj p_user.obj r_bsp.obj r_data.obj r_draw.obj r_main.obj &
+         r_plane.obj r_segs.obj r_sky.obj r_things.obj w_wad.obj &
+         wi_stuff.obj v_video.obj st_lib.obj st_stuff.obj hu_stuff.obj &
+         hu_lib.obj s_sound.obj z_zone.obj info.obj sounds.obj
+
+OBJS = $(PLATFORM) $(ENGINE)
+
+all : DOOM.EXE .SYMBOLIC
+
+#  "sys os2v2", not os2v2_pm.  The program is linked as a text mode
+#  application and morphs itself into a Presentation Manager one when it
+#  opens its window, so that the startup banner still reaches the session it
+#  was started from.  See README.OS2.
+DOOM.EXE : $(OBJS)
+	wlink sys os2v2 name DOOM.EXE &
+	  option quiet option map option stack=$(STACK) &
+	  option description 'DOOM for OS/2' &
+	  file { $(OBJS) }
+	@if exist $(SRC)\RES\DOOM.OS2 wrc -bt=os2 -r -q -i=$(SRC)\RES $(SRC)\RES\DOOM.RC -fo=DOOM.res
+	@if exist DOOM.res wrc -bt=os2 -q DOOM.res DOOM.EXE
+
+.c : $(SRC)
+
+.c.obj :
+	wcc386 $[@ $(CFLAGS)
+
+clean : .SYMBOLIC
+	@if exist *.obj del *.obj
+	@if exist *.res del *.res
+	@if exist DOOM.map del DOOM.map
+	@if exist DOOM.EXE del DOOM.EXE

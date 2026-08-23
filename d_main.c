@@ -84,6 +84,14 @@ static const char rcsid[] = "$Id: d_main.c,v 1.8 1997/02/03 22:45:09 b1 Exp $";
 
 #include "d_main.h"
 
+#ifdef __OS2__
+// Defined in D_OS2IWD.C.  Declared here rather than by including os2doom.h,
+// which would drag os2.h and its several hundred typedefs into an engine
+// source file for the sake of one function.  It has to come after doomdef.h,
+// which is where boolean is defined.
+boolean D_OS2FindIWAD (void);
+#endif
+
 //
 // D-DoomLoop()
 // Not a globally visible function,
@@ -710,6 +718,20 @@ void IdentifyVersion (void)
 	strcpy (basedefault,DEVDATA"default.cfg");
 	return;
     }
+
+#ifdef __OS2__
+    // Ask the WAD what it is, rather than trusting what it is called.
+    //
+    // This is what lets a retail IWAD called DOOM.WAD -- which is what every
+    // real copy of Ultimate DOOM and the Special Edition is called -- be
+    // recognised as the four episode game instead of falling through to the
+    // DOOM.WAD test below and being taken for three episode registered.
+    //
+    // It also searches more than one directory and honours -iwad.  It does
+    // not return if there is no IWAD anywhere: see D_OS2IWD.C.
+    if (D_OS2FindIWAD ())
+	return;
+#endif
 
     if ( !access (doom2fwad,R_OK) )
     {
