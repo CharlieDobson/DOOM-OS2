@@ -260,6 +260,23 @@ static MRESULT EXPENTRY ChoiceWndProc
 	choiceMade = -1;
 	choiceDone = true;
 	return 0;
+
+      //
+      // Yes, PM, please paint the background.
+      //
+      // Returning TRUE here is what asks PM to erase the client with the
+      // window's background colour before WM_PAINT.  Falling through to
+      // WinDefWindowProc instead does not do it, and what is left is a window
+      // showing whatever happened to be on the screen underneath, with the
+      // controls floating on top of it.
+      //
+      // I_OS2LOAD.C returns FALSE from this same message for the opposite
+      // reason: it paints every pixel of its own window and an erase first
+      // would only make it flicker.  The two are not inconsistent -- one
+      // draws its own background and one does not.
+      //
+      case WM_ERASEBACKGROUND:
+	return (MRESULT)TRUE;
     }
 
     return WinDefWindowProc (hwnd, msg, mp1, mp2);
@@ -326,6 +343,20 @@ int I_OS2_ChooseIwad (os2iwad_t *list, int count, int preferred)
 	    WinDestroyWindow (hwndFrame);
 
 	return preferred;
+    }
+
+    //
+    // The colour a dialog is expected to be, rather than the colour a plain
+    // window is expected to be.  The controls draw themselves against the
+    // dialog background whatever this says, so leaving it at the default
+    // gives radio buttons in one colour sitting on a client in another.
+    //
+    {
+	ULONG	rgb = WinQuerySysColor (HWND_DESKTOP,
+					SYSCLR_DIALOGBACKGROUND, 0);
+
+	WinSetPresParam (hwndClient, PP_BACKGROUNDCOLOR,
+			 sizeof(rgb), (PVOID)&rgb);
     }
 
     clientH = TOP_H + count * ROW_H + BOTTOM_H;

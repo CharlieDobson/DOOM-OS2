@@ -321,16 +321,30 @@ static boolean D_IdentifyIwad (char *path, os2iwad_t *out)
 //
 static boolean D_AddCandidate (char *path)
 {
+    char	full[CCHMAXPATH];
     int		i;
 
     if (numiwads >= MAX_IWAD_CHOICES)
 	return false;
 
+    if (strlen (path) >= CCHMAXPATH)
+	return false;
+
+    //
+    // Canonical before comparing, for the same reason the search directories
+    // are: two names for one file must not become two entries in the list.
+    // The directories are already canonical, so this is belt and braces --
+    // but it is also what puts a real path in front of the player instead of
+    // ".\DOOM.WAD", and that matters when the path is the only thing telling
+    // two otherwise identically named games apart.
+    //
+    CanonicalPath (path, full);
+
     for (i = 0; i < numiwads; i++)
-	if (!stricmp (iwads[i].path, path))
+	if (!stricmp (iwads[i].path, full))
 	    return false;
 
-    if (!D_IdentifyIwad (path, &iwads[numiwads]))
+    if (!D_IdentifyIwad (full, &iwads[numiwads]))
 	return false;
 
     numiwads++;
@@ -383,26 +397,70 @@ static boolean D_TryIwad (char *path)
 
 
 //
+// CanonicalPath
+//
+// The one name a file or directory really has.
+//
+// The three places searched are given in whatever form they arrive in: the
+// current directory as ".", the executable's directory as whatever was on the
+// command line, DOOMWADDIR as whatever the player typed.  Two of those are
+// very often the same directory said two different ways, and comparing the
+// strings cannot see it -- which is how a single DOOM.WAD came to be offered
+// twice, once as .\DOOM.WAD and once as C:\DOOM\DOOM.WAD.
+//
+// DosQueryPathInfo with FIL_QUERYFULLNAME is the system's own answer to that.
+// It resolves the drive, the current directory, the separators and any dots
+// along the way, so anything naming the same file comes back identical.
+//
+// A path it will not resolve is left exactly as it was: it is still worth
+// trying to open, and being unable to tidy a name is no reason to refuse it.
+//
+static void CanonicalPath (char *in, char *out)
+{
+    char	buf[CCHMAXPATH];
+
+    if (DosQueryPathInfo ((PSZ)in, FIL_QUERYFULLNAME,
+			  (PVOID)buf, sizeof(buf)) == NO_ERROR
+	&& buf[0]
+	&& strlen (buf) < CCHMAXPATH)
+    {
+	strcpy (out, buf);
+	return;
+    }
+
+    strcpy (out, in);
+}
+
+
+//
 // AddSearchDir
 //
 static void AddSearchDir (char *dir)
 {
+    char	full[CCHMAXPATH];
     int		i;
 
     if (!dir || !*dir || numsearchdirs >= MAX_SEARCH_DIRS)
 	return;
 
+    if (strlen (dir) >= CCHMAXPATH)
+	return;
+
+    CanonicalPath (dir, full);
+
     // Do not look in the same place twice, which is the usual case:
-    // DOOMWADDIR pointing at the directory the program is already in.
+    // DOOMWADDIR pointing at the directory the program is already in, or the
+    // program having been started from its own directory so that "." and the
+    // executable's directory are one and the same.
     for (i = 0; i < numsearchdirs; i++)
-	if (!stricmp (searchdir[i], dir))
+	if (!stricmp (searchdir[i], full))
 	    return;
 
-    searchdir[numsearchdirs] = (char *) malloc (strlen(dir) + 1);
+    searchdir[numsearchdirs] = (char *) malloc (strlen(full) + 1);
     if (!searchdir[numsearchdirs])
 	return;
 
-    strcpy (searchdir[numsearchdirs], dir);
+    strcpy (searchdir[numsearchdirs], full);
     numsearchdirs++;
 }
 
