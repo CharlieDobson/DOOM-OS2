@@ -43,6 +43,16 @@ rcsid[] = "$Id: r_draw.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 // State.
 #include "doomstat.h"
 
+//
+// R_DRAWA.ASM has 320 built into it, because a #define is not something an
+// assembler can read out of a C header.  If SCREENWIDTH ever changes, the
+// assembly has to change with it -- and this makes that a build failure
+// rather than a picture that comes out quietly sheared.
+//
+#if SCREENWIDTH != 320
+#error "R_DRAWA.ASM hardcodes SCREENWIDTH as 320; update it to match."
+#endif
+
 
 // ?
 #define MAXWIDTH			1120

@@ -38,6 +38,9 @@ static const char rcsid[] = "$Id: r_main.c,v 1.5 1997/02/03 22:45:12 b1 Exp $";
 
 #include "m_bbox.h"
 
+// For -noasm, which chooses the C inner loops over the ones in R_DRAWA.ASM.
+#include "m_argv.h"
+
 #include "r_local.h"
 #include "r_sky.h"
 
@@ -702,10 +705,20 @@ void R_ExecuteSetViewSize (void)
 
     if (!detailshift)
     {
-	colfunc = basecolfunc = R_DrawColumn;
+	//
+	// The assembly pair unless asked otherwise -- see R_DRAWA.ASM.
+	//
+	// Read here rather than cached in a global: this runs when the detail
+	// level or the screen size changes, which is to say hardly ever, and
+	// a switch read where it is used is one fewer piece of state to get
+	// out of step.
+	//
+	boolean	useasm = M_CheckParm ("-noasm") == 0;
+
+	colfunc = basecolfunc = useasm ? R_DrawColumnA : R_DrawColumn;
 	fuzzcolfunc = R_DrawFuzzColumn;
 	transcolfunc = R_DrawTranslatedColumn;
-	spanfunc = R_DrawSpan;
+	spanfunc = useasm ? R_DrawSpanA : R_DrawSpan;
     }
     else
     {

@@ -57,6 +57,21 @@ void 	R_DrawFuzzColumnLow (void);
 void	R_DrawTranslatedColumn (void);
 void	R_DrawTranslatedColumnLow (void);
 
+//
+// The same two inner loops, in assembly.  R_DRAWA.ASM; OS/2 port only.
+//
+// Not different, deliberately: they were checked against the C over a hundred
+// thousand randomly generated columns and spans plus the edge cases, and draw
+// the same bytes in the same places.  A faster renderer that draws a slightly
+// different picture is not an optimisation of anything.
+//
+// R_ExecuteSetViewSize chooses between these and the C once, when the detail
+// level changes; -noasm asks for the C.  Only the full detail pair exist --
+// low detail mode still goes through R_DrawColumnLow and R_DrawSpanLow.
+//
+void	R_DrawColumnA (void);
+void	R_DrawSpanA (void);
+
 void
 R_VideoErase
 ( unsigned	ofs,
