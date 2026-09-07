@@ -20,7 +20,7 @@ rem  Watcom location.  An existing %WATCOM% is honoured -- a normal Open
 rem  Watcom install sets it -- so the fallback below only matters when the
 rem  variable is unset.  A path containing spaces will not work: Watcom's
 rem  -i= option takes no quoting.
-if not defined WATCOM set WATCOM=C:\WATCOM
+if "%WATCOM%"=="" set WATCOM=C:\WATCOM
 
 if not exist "%WATCOM%\binnt\wlink.exe" goto nowatcom
 
@@ -94,7 +94,10 @@ rem            unreferenced rcsid[] string at the top of all sixty files, and
 rem            a good deal else that is deliberate, buries anything worth
 rem            reading.
 rem --------------------------------------------------------------------------
-set CFLAGS=-bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -j -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
+rem  These flags are spelled out at each compile line below rather than
+rem  held in CFLAGS.  NT 3.51's SET splits on the LAST '=', so it refuses
+rem  any value containing one: "set CFLAGS=-bt=..." sets nothing there and
+rem  reports only "The syntax of the command is incorrect".
 
 rem  !! STACK !!  1 MB, not the default.
 rem
@@ -105,7 +108,11 @@ rem  PWAD can ask for a hundred kilobytes in one go.  OS/2 commits stack
 rem  pages on demand, so reserving this much costs nothing until it is used.
 set STACK=1048576
 
-pushd "%~dp0"
+rem  NT 3.51's cmd.exe has no %~dp0.  Win32 folds "<file>\.."
+rem  lexically, so "%0\.." is the directory holding this script, and
+rem  pushd - unlike cd - changes the drive as well.
+pushd "%0\.."
+if not exist MKOS2.CMD goto nohome
 
 del DOOM.EXE >nul 2>&1
 del *.obj >nul 2>&1
@@ -119,7 +126,7 @@ rem     apart from the handful of places noted in README.OS2.
 rem --------------------------------------------------------------------------
 echo Compiling the OS/2 platform layer...
 for %%F in (i_main i_system i_video i_sound i_net d_os2iwd i_os2mus i_os2log i_os2load i_os2wad) do (
-  wcc386 ..\%%F.c %CFLAGS%
+  wcc386 ..\%%F.c -bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -j -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
   if errorlevel 1 goto failed
   if not exist %%F.obj goto failed
 )
@@ -134,10 +141,28 @@ for %%F in (
   w_wad wi_stuff v_video st_lib st_stuff hu_stuff hu_lib s_sound z_zone
   info sounds
 ) do (
-  wcc386 ..\%%F.c %CFLAGS%
+  wcc386 ..\%%F.c -bt=os2 -bm -dNORMALUNIX -otexn -5r -ei -j -zq -w1 -e25 -i=.. -i=%WATCOM%\H -i=%WATCOM%\H\OS2
   if errorlevel 1 goto failed
   if not exist %%F.obj goto failed
 )
+
+rem --------------------------------------------------------------------------
+rem     The two renderer inner loops, in assembly.
+rem
+rem     R_DrawColumn and R_DrawSpan between them draw very nearly every pixel
+rem     of every frame, and both end in a store through a byte pointer --
+rem     which obliges a correct compiler to reload the globals they read on
+rem     every single pixel, in case that store changed them.  The assembly
+rem     holds them in registers instead.  See the top of R_DRAWA.ASM.
+rem
+rem     The C versions are still compiled and still correct; -noasm picks
+rem     them, and the two were checked against each other over a hundred
+rem     thousand columns and spans before this went in.
+rem --------------------------------------------------------------------------
+echo Assembling the renderer inner loops...
+wasm -bt=os2 -zq ..\r_drawa.asm -fo=r_drawa.obj
+if errorlevel 1 goto failed
+if not exist r_drawa.obj goto failed
 
 rem --------------------------------------------------------------------------
 rem  2. link
@@ -174,6 +199,7 @@ wlink sys os2v2_pm name DOOM.EXE ^
   option description 'DOOM for OS/2' ^
   file i_main.obj,i_system.obj,i_video.obj,i_sound.obj,i_net.obj, ^
        d_os2iwd.obj,i_os2mus.obj,i_os2log.obj,i_os2load.obj,i_os2wad.obj, ^
+       r_drawa.obj, ^
        doomdef.obj,doomstat.obj,dstrings.obj,tables.obj,f_finale.obj, ^
        f_wipe.obj,d_main.obj,d_net.obj,d_items.obj,g_game.obj,m_menu.obj, ^
        m_misc.obj,m_argv.obj,m_bbox.obj,m_fixed.obj,m_swap.obj, ^
@@ -220,7 +246,7 @@ echo Put it beside a DOOM WAD, or set DOOMWADDIR to point at one, and run it
 echo from the desktop or an OS/2 window.  See README.OS2.
 popd
 endlocal
-goto :eof
+goto end
 
 :nowatcom
 echo.
@@ -230,11 +256,24 @@ echo *** Set the WATCOM environment variable to your Open Watcom 1.9
 echo *** installation directory, or edit the fallback near the top of
 echo *** this script.
 endlocal
-exit /b 1
+goto failrc
 
 :failed
 echo.
 echo *** BUILD FAILED - see the wcc386/wlink errors above.
 popd
 endlocal
-exit /b 1
+goto failrc
+
+:nohome
+echo *** Could not switch to the directory holding MKOS2.CMD.
+echo *** Run MKOS2.CMD from that directory; a path with spaces in it
+echo *** cannot be found this way on NT 3.51.
+
+:failrc
+rem  NT 3.51's cmd.exe has no EXIT /B, and its EXIT ignores an exit code.
+rem  A FIND that matches nothing is how this script hands ERRORLEVEL 1
+rem  back to whoever called it, so it must be the LAST thing run.
+ver | find "@@" > nul
+
+:end

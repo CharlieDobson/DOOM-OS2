@@ -44,7 +44,11 @@ ENGINE = doomdef.obj doomstat.obj dstrings.obj tables.obj f_finale.obj &
          wi_stuff.obj v_video.obj st_lib.obj st_stuff.obj hu_stuff.obj &
          hu_lib.obj s_sound.obj z_zone.obj info.obj sounds.obj
 
-OBJS = $(PLATFORM) $(ENGINE)
+#  The two renderer inner loops, hand written.  See the top of R_DRAWA.ASM
+#  for why, and MKOS2.CMD for the same note.  -noasm selects the C.
+ASM = r_drawa.obj
+
+OBJS = $(PLATFORM) $(ENGINE) $(ASM)
 
 all : DOOM.EXE .SYMBOLIC
 
@@ -70,3 +74,8 @@ clean : .SYMBOLIC
 	@if exist *.res del *.res
 	@if exist DOOM.map del DOOM.map
 	@if exist DOOM.EXE del DOOM.EXE
+
+.asm : $(SRC)
+
+.asm.obj :
+	wasm -bt=os2 -zq $[@

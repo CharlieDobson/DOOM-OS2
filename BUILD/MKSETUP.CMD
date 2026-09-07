@@ -29,11 +29,14 @@ rem            no structure with DOOM and lays nothing over a file format --
 rem            it reads DEFAULT.CFG as text, a line at a time.  The traps
 rem            documented in MKOS2.CMD are traps for the engine, not for this.
 
-set SFLAGS=-bt=os2 -bm -5r -zq -w1 -e25 -i=%WATCOM%\H -i=%WATCOM%\H\OS2
+rem  These flags are spelled out at each compile line below rather than
+rem  held in SFLAGS.  NT 3.51's SET splits on the LAST '=', so it refuses
+rem  any value containing one: "set SFLAGS=-bt=..." sets nothing there and
+rem  reports only "The syntax of the command is incorrect".
 
 echo Compiling OS2SETUP...
 
-wcc386 ..\os2setup.c %SFLAGS%
+wcc386 ..\os2setup.c -bt=os2 -bm -5r -zq -w1 -e25 -i=%WATCOM%\H -i=%WATCOM%\H\OS2
 if errorlevel 1 goto failed
 if not exist os2setup.obj goto failed
 

@@ -1,0 +1,1014 @@
+.387
+.386p
+.model flat
+		PUBLIC	R_DrawColumn_
+		PUBLIC	R_DrawColumnLow_
+		PUBLIC	R_DrawFuzzColumn_
+		PUBLIC	R_DrawTranslatedColumn_
+		PUBLIC	R_InitTranslationTables_
+		PUBLIC	R_DrawSpan_
+		PUBLIC	R_DrawSpanLow_
+		PUBLIC	R_InitBuffer_
+		PUBLIC	R_FillBackScreen_
+		PUBLIC	R_VideoErase_
+		PUBLIC	R_DrawViewBorder_
+		PUBLIC	_fuzzoffset
+		PUBLIC	_fuzzpos
+		PUBLIC	_ylookup
+		PUBLIC	_columnofs
+		PUBLIC	_translations
+		PUBLIC	_dscount
+		PUBLIC	_viewimage
+		PUBLIC	_dccount
+		PUBLIC	_ds_xstep
+		PUBLIC	_ds_ystep
+		PUBLIC	_ds_x1
+		PUBLIC	_ds_x2
+		PUBLIC	_ds_yfrac
+		PUBLIC	_ds_source
+		PUBLIC	_translationtables
+		PUBLIC	_ds_y
+		PUBLIC	_ds_colormap
+		PUBLIC	_ds_xfrac
+		PUBLIC	_dc_translation
+		PUBLIC	_dc_texturemid
+		PUBLIC	_dc_iscale
+		PUBLIC	_dc_source
+		PUBLIC	_dc_x
+		PUBLIC	_dc_yh
+		PUBLIC	_dc_yl
+		PUBLIC	_dc_colormap
+		PUBLIC	_viewwindowy
+		PUBLIC	_viewwindowx
+		PUBLIC	_scaledviewwidth
+		PUBLIC	_viewheight
+		PUBLIC	_viewwidth
+		EXTRN	_centery:BYTE
+		EXTRN	I_Error_:BYTE
+		EXTRN	_colormaps:BYTE
+		EXTRN	Z_Malloc_:BYTE
+		EXTRN	_screens:BYTE
+		EXTRN	_gamemode:BYTE
+		EXTRN	W_CacheLumpName_:BYTE
+		EXTRN	V_DrawPatch_:BYTE
+		EXTRN	V_MarkRect_:BYTE
+DGROUP		GROUP	CONST,CONST2,_DATA,_BSS
+_TEXT		SEGMENT	PARA PUBLIC USE32 'CODE'
+		ASSUME CS:_TEXT, DS:DGROUP, SS:DGROUP
+L$1:
+    DB	46H, 4cH, 4fH, 4fH, 52H, 37H, 5fH, 32H
+    DB	0
+L$2:
+    DB	47H, 52H, 4eH, 52H, 4fH, 43H, 4bH, 0
+    lea         eax,[eax] 
+    lea         edx,[edx] 
+    lea         eax,[eax] 
+R_DrawColumn_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    mov         edx,dword ptr FLAT:_dc_yh 
+    mov         eax,dword ptr FLAT:_dc_yl 
+    sub         edx,eax 
+    test        edx,edx 
+    jl          L$5 
+    cmp         dword ptr FLAT:_dc_x,140H 
+    jae         L$6 
+    test        eax,eax 
+    jl          L$6 
+    cmp         dword ptr FLAT:_dc_yh,0c8H 
+    jge         L$6 
+L$3:
+    mov         ecx,dword ptr FLAT:_dc_yl 
+    mov         eax,dword ptr FLAT:_dc_x 
+    mov         ecx,dword ptr FLAT:_ylookup[ecx*4] 
+    mov         eax,dword ptr FLAT:_columnofs[eax*4] 
+    add         eax,ecx 
+    mov         ecx,dword ptr FLAT:_dc_yl 
+    mov         edi,dword ptr FLAT:_dc_iscale 
+    sub         ecx,dword ptr FLAT:_centery 
+    imul        ecx,edi 
+    add         ecx,dword ptr FLAT:_dc_texturemid 
+L$4:
+    mov         esi,ecx 
+    sar         esi,10H 
+    mov         ebx,dword ptr FLAT:_dc_source 
+    and         esi,7fH 
+    mov         bl,byte ptr [esi+ebx] 
+    mov         esi,dword ptr FLAT:_dc_colormap 
+    and         ebx,0ffH 
+    add         eax,140H 
+    dec         edx 
+    mov         bl,byte ptr [esi+ebx] 
+    add         ecx,edi 
+    mov         byte ptr -140H[eax],bl 
+    cmp         edx,0ffffffffH 
+    jne         L$4 
+L$5:
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$6:
+    mov         edi,dword ptr FLAT:_dc_x 
+    push        edi 
+    mov         ebp,dword ptr FLAT:_dc_yh 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_dc_yl 
+    push        eax 
+    push        offset FLAT:L$57 
+    call        near ptr FLAT:I_Error_ 
+    add         esp,10H 
+    jmp         near ptr L$3 
+    lea         eax,[eax] 
+    lea         edx,[edx] 
+    mov         ebx,ebx 
+R_DrawColumnLow_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    sub         esp,4 
+    mov         edx,dword ptr FLAT:_dc_yh 
+    mov         eax,dword ptr FLAT:_dc_yl 
+    sub         edx,eax 
+    test        edx,edx 
+    jl          L$9 
+    cmp         dword ptr FLAT:_dc_x,140H 
+    jae         L$10 
+    test        eax,eax 
+    jl          L$10 
+    cmp         dword ptr FLAT:_dc_yh,0c8H 
+    jge         L$10 
+L$7:
+    mov         eax,dword ptr FLAT:_dc_x 
+    mov         esi,dword ptr FLAT:_dc_yl 
+    lea         ecx,[eax+eax] 
+    mov         esi,dword ptr FLAT:_ylookup[esi*4] 
+    mov         eax,dword ptr FLAT:_columnofs[eax*8] 
+    mov         dword ptr FLAT:_dc_x,ecx 
+    add         eax,esi 
+    add         esi,dword ptr FLAT:_columnofs+4[ecx*4] 
+    mov         ecx,dword ptr FLAT:_dc_iscale 
+    mov         dword ptr [esp],ecx 
+    mov         ecx,dword ptr FLAT:_dc_yl 
+    sub         ecx,dword ptr FLAT:_centery 
+    imul        ecx,dword ptr [esp] 
+    add         ecx,dword ptr FLAT:_dc_texturemid 
+L$8:
+    mov         ebx,ecx 
+    sar         ebx,10H 
+    mov         edi,dword ptr FLAT:_dc_source 
+    and         ebx,7fH 
+    movzx       edi,byte ptr [edi+ebx] 
+    mov         ebx,dword ptr FLAT:_dc_colormap 
+    add         eax,140H 
+    add         esi,140H 
+    mov         bl,byte ptr [edi+ebx] 
+    dec         edx 
+    mov         byte ptr -140H[eax],bl 
+    add         ecx,dword ptr [esp] 
+    mov         byte ptr -140H[esi],bl 
+    cmp         edx,0ffffffffH 
+    jne         L$8 
+L$9:
+    add         esp,4 
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$10:
+    mov         edi,dword ptr FLAT:_dc_x 
+    push        edi 
+    mov         ebp,dword ptr FLAT:_dc_yh 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_dc_yl 
+    push        eax 
+    push        offset FLAT:L$57 
+    call        near ptr FLAT:I_Error_ 
+    add         esp,10H 
+    jmp         near ptr L$7 
+    lea         eax,[eax] 
+    mov         ecx,ecx 
+R_DrawFuzzColumn_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        ebp 
+    cmp         dword ptr FLAT:_dc_yl,0 
+    je          L$18 
+L$11:
+    mov         eax,dword ptr FLAT:_viewheight 
+    dec         eax 
+    cmp         eax,dword ptr FLAT:_dc_yh 
+    jne         L$12 
+    mov         eax,dword ptr FLAT:_viewheight 
+    sub         eax,2 
+    mov         dword ptr FLAT:_dc_yh,eax 
+L$12:
+    mov         edx,dword ptr FLAT:_dc_yh 
+    mov         ebx,dword ptr FLAT:_dc_yl 
+    sub         edx,ebx 
+    test        edx,edx 
+    jl          L$17 
+    cmp         dword ptr FLAT:_dc_x,140H 
+    jb          L$19 
+L$13:
+    mov         eax,dword ptr FLAT:_dc_x 
+    push        eax 
+    mov         ecx,dword ptr FLAT:_dc_yh 
+    push        ecx 
+    mov         ebx,dword ptr FLAT:_dc_yl 
+    push        ebx 
+    push        offset FLAT:L$58 
+    call        near ptr FLAT:I_Error_ 
+    add         esp,10H 
+L$14:
+    mov         ecx,dword ptr FLAT:_dc_yl 
+    mov         eax,dword ptr FLAT:_dc_x 
+    mov         ecx,dword ptr FLAT:_ylookup[ecx*4] 
+    mov         eax,dword ptr FLAT:_columnofs[eax*4] 
+    add         eax,ecx 
+L$15:
+    mov         ecx,dword ptr FLAT:_fuzzpos 
+    mov         ebx,dword ptr FLAT:_fuzzoffset[ecx*4] 
+    mov         bl,byte ptr [ebx+eax] 
+    mov         ecx,dword ptr FLAT:_colormaps 
+    and         ebx,0ffH 
+    mov         bl,byte ptr 600H[ecx+ebx] 
+    mov         byte ptr [eax],bl 
+    mov         esi,dword ptr FLAT:_fuzzpos 
+    inc         esi 
+    mov         dword ptr FLAT:_fuzzpos,esi 
+    cmp         esi,32H 
+    jne         L$16 
+    xor         ebp,ebp 
+    mov         dword ptr FLAT:_fuzzpos,ebp 
+L$16:
+    dec         edx 
+    add         eax,140H 
+    cmp         edx,0ffffffffH 
+    jne         L$15 
+L$17:
+    pop         ebp 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$18:
+    mov         dword ptr FLAT:_dc_yl,1 
+    jmp         near ptr L$11 
+L$19:
+    test        ebx,ebx 
+    jl          L$13 
+    cmp         dword ptr FLAT:_dc_yh,0c8H 
+    jge         L$13 
+    jmp         near ptr L$14 
+    lea         eax,[eax] 
+    mov         ecx,ecx 
+R_DrawTranslatedColumn_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    mov         edx,dword ptr FLAT:_dc_yh 
+    mov         eax,dword ptr FLAT:_dc_yl 
+    sub         edx,eax 
+    test        edx,edx 
+    jl          L$22 
+    cmp         dword ptr FLAT:_dc_x,140H 
+    jae         L$24 
+    test        eax,eax 
+    jl          L$24 
+    cmp         dword ptr FLAT:_dc_yh,0c8H 
+    jge         L$24 
+L$20:
+    mov         eax,dword ptr FLAT:_dc_yl 
+    mov         edi,dword ptr FLAT:_dc_iscale 
+    mov         ecx,dword ptr FLAT:_ylookup[eax*4] 
+    sub         eax,dword ptr FLAT:_centery 
+    imul        eax,edi 
+    mov         ebx,dword ptr FLAT:_dc_x 
+    add         ecx,dword ptr FLAT:_columnofs[ebx*4] 
+    add         eax,dword ptr FLAT:_dc_texturemid 
+L$21:
+    mov         esi,eax 
+    mov         ebx,dword ptr FLAT:_dc_source 
+    sar         esi,10H 
+    movzx       esi,byte ptr [esi+ebx] 
+    mov         ebx,dword ptr FLAT:_dc_translation 
+    mov         bl,byte ptr [esi+ebx] 
+    mov         esi,dword ptr FLAT:_dc_colormap 
+    and         ebx,0ffH 
+    add         ecx,140H 
+    dec         edx 
+    mov         bl,byte ptr [esi+ebx] 
+    add         eax,edi 
+    mov         byte ptr -140H[ecx],bl 
+    cmp         edx,0ffffffffH 
+    jne         L$21 
+L$22:
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+L$23:
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$24:
+    mov         edi,dword ptr FLAT:_dc_x 
+    push        edi 
+    mov         ebp,dword ptr FLAT:_dc_yh 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_dc_yl 
+    push        eax 
+    push        offset FLAT:L$57 
+    call        near ptr FLAT:I_Error_ 
+    add         esp,10H 
+    jmp         near ptr L$20 
+    lea         eax,[eax] 
+    lea         edx,[edx] 
+    mov         ebx,ebx 
+R_InitTranslationTables_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    mov         edx,1 
+    mov         eax,3ffH 
+    xor         ebx,ebx 
+    call        near ptr FLAT:Z_Malloc_ 
+    add         eax,0ffH 
+    xor         al,al 
+    mov         bh,0fH 
+    mov         dword ptr FLAT:_translationtables,eax 
+    xor         eax,eax 
+L$25:
+    mov         ecx,dword ptr FLAT:_translationtables 
+    mov         byte ptr 200H[ecx+eax],al 
+    mov         ecx,dword ptr FLAT:_translationtables 
+    mov         byte ptr 100H[ecx+eax],al 
+    mov         ecx,dword ptr FLAT:_translationtables 
+    mov         byte ptr [ecx+eax],al 
+L$26:
+    inc         eax 
+    cmp         eax,100H 
+    jge         L$23 
+    cmp         eax,70H 
+    jl          L$25 
+    cmp         eax,7fH 
+    jg          L$25 
+    mov         dl,al 
+    and         dl,bh 
+    mov         dh,dl 
+    mov         ecx,dword ptr FLAT:_translationtables 
+    add         dh,60H 
+    mov         byte ptr [ecx+eax],dh 
+    mov         dh,dl 
+    mov         ecx,dword ptr FLAT:_translationtables 
+    add         dh,40H 
+    mov         byte ptr 100H[ecx+eax],dh 
+    mov         ecx,dword ptr FLAT:_translationtables 
+    add         dl,20H 
+    mov         byte ptr 200H[ecx+eax],dl 
+    jmp         L$26 
+    lea         eax,[eax] 
+    lea         edx,[edx] 
+    nop         
+R_DrawSpan_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_ds_x2 
+    mov         edx,dword ptr FLAT:_ds_x1 
+    cmp         eax,edx 
+    jl          L$27 
+    test        edx,edx 
+    jl          L$27 
+    cmp         eax,140H 
+    jl          L$30 
+L$27:
+    mov         edi,dword ptr FLAT:_ds_y 
+    push        edi 
+    mov         ebp,dword ptr FLAT:_ds_x2 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_ds_x1 
+    push        eax 
+    push        offset FLAT:L$59 
+    call        near ptr FLAT:I_Error_ 
+    add         esp,10H 
+L$28:
+    mov         edx,dword ptr FLAT:_ds_y 
+    mov         eax,dword ptr FLAT:_ds_x1 
+    mov         edx,dword ptr FLAT:_ylookup[edx*4] 
+    mov         ecx,dword ptr FLAT:_ds_xfrac 
+    add         edx,dword ptr FLAT:_columnofs[eax*4] 
+    mov         eax,dword ptr FLAT:_ds_x2 
+    mov         esi,dword ptr FLAT:_ds_yfrac 
+    sub         eax,dword ptr FLAT:_ds_x1 
+L$29:
+    mov         ebx,esi 
+    mov         edi,ecx 
+    sar         ebx,0aH 
+    sar         edi,10H 
+    and         ebx,0fc0H 
+    and         edi,3fH 
+    add         ebx,edi 
+    mov         edi,dword ptr FLAT:_ds_source 
+    movzx       edi,byte ptr [edi+ebx] 
+    mov         ebx,dword ptr FLAT:_ds_colormap 
+    inc         edx 
+    mov         bl,byte ptr [edi+ebx] 
+    mov         byte ptr -1[edx],bl 
+    dec         eax 
+    add         ecx,dword ptr FLAT:_ds_xstep 
+    add         esi,dword ptr FLAT:_ds_ystep 
+    cmp         eax,0ffffffffH 
+    jne         L$29 
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$30:
+    cmp         dword ptr FLAT:_ds_y,0c8H 
+    ja          L$27 
+    jmp         near ptr L$28 
+    nop         
+R_DrawSpanLow_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_ds_x2 
+    mov         edx,dword ptr FLAT:_ds_x1 
+    cmp         eax,edx 
+    jl          L$31 
+    test        edx,edx 
+    jl          L$31 
+    cmp         eax,140H 
+    jl          L$34 
+L$31:
+    mov         edi,dword ptr FLAT:_ds_y 
+    push        edi 
+    mov         ebp,dword ptr FLAT:_ds_x2 
+    push        ebp 
+    mov         eax,dword ptr FLAT:_ds_x1 
+    push        eax 
+    push        offset FLAT:L$59 
+    call        near ptr FLAT:I_Error_ 
+    add         esp,10H 
+L$32:
+    mov         ecx,dword ptr FLAT:_ds_xfrac 
+    mov         edx,dword ptr FLAT:_ds_yfrac 
+    mov         eax,dword ptr FLAT:_ds_y 
+    mov         ebx,dword ptr FLAT:_ds_x1 
+    mov         esi,dword ptr FLAT:_ds_x2 
+    mov         eax,dword ptr FLAT:_ylookup[eax*4] 
+    add         esi,esi 
+    lea         edi,[ebx+ebx] 
+    mov         dword ptr FLAT:_ds_x2,esi 
+    mov         dword ptr FLAT:_ds_x1,edi 
+    add         eax,dword ptr FLAT:_columnofs[ebx*8] 
+    sub         esi,edi 
+L$33:
+    mov         ebx,edx 
+    mov         edi,ecx 
+    sar         ebx,0aH 
+    sar         edi,10H 
+    and         ebx,0fc0H 
+    and         edi,3fH 
+    add         edi,ebx 
+    mov         ebx,dword ptr FLAT:_ds_source 
+    mov         bl,byte ptr [edi+ebx] 
+    mov         ebp,dword ptr FLAT:_ds_colormap 
+    and         ebx,0ffH 
+    add         ebx,ebp 
+    mov         bl,byte ptr [ebx] 
+    mov         byte ptr [eax],bl 
+    mov         ebx,dword ptr FLAT:_ds_source 
+    movzx       edi,byte ptr [edi+ebx] 
+    mov         ebx,dword ptr FLAT:_ds_colormap 
+    inc         eax 
+    dec         esi 
+    mov         bl,byte ptr [edi+ebx] 
+    mov         byte ptr [eax],bl 
+    inc         eax 
+    add         ecx,dword ptr FLAT:_ds_xstep 
+    add         edx,dword ptr FLAT:_ds_ystep 
+    cmp         esi,0ffffffffH 
+    jne         L$33 
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$34:
+    cmp         dword ptr FLAT:_ds_y,0c8H 
+    ja          L$31 
+    jmp         near ptr L$32 
+    lea         eax,[eax] 
+    mov         edx,edx 
+R_InitBuffer_:
+    push        ebx 
+    push        ecx 
+    push        esi 
+    mov         ebx,eax 
+    mov         esi,edx 
+    mov         eax,140H 
+    sub         eax,ebx 
+    sar         eax,1 
+    mov         dword ptr FLAT:_viewwindowx,eax 
+    xor         eax,eax 
+    test        ebx,ebx 
+    jle         L$36 
+    mov         ecx,dword ptr FLAT:_viewwindowx 
+    xor         edx,edx 
+L$35:
+    inc         eax 
+    mov         dword ptr FLAT:_columnofs[edx],ecx 
+    add         edx,4 
+    inc         ecx 
+    cmp         eax,ebx 
+    jl          L$35 
+L$36:
+    cmp         ebx,140H 
+    je          L$40 
+    mov         eax,0a8H 
+    sub         eax,esi 
+    sar         eax,1 
+L$37:
+    mov         dword ptr FLAT:_viewwindowy,eax 
+    xor         eax,eax 
+    test        esi,esi 
+    jle         L$39 
+    xor         edx,edx 
+    imul        ecx,dword ptr FLAT:_viewwindowy,140H 
+L$38:
+    mov         ebx,dword ptr FLAT:_screens 
+    add         edx,4 
+    inc         eax 
+    add         ebx,ecx 
+    add         ecx,140H 
+    mov         dword ptr FLAT:_ylookup-4[edx],ebx 
+    cmp         eax,esi 
+    jl          L$38 
+L$39:
+    pop         esi 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$40:
+    xor         eax,eax 
+    jmp         L$37 
+    mov         eax,eax 
+R_FillBackScreen_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    sub         esp,1cH 
+    mov         edi,esp 
+    mov         esi,offset FLAT:L$1 
+    movsd       
+    movsd       
+    movsb       
+    lea         edi,0cH[esp] 
+    mov         esi,offset FLAT:L$2 
+    movsd       
+    movsd       
+    cmp         dword ptr FLAT:_scaledviewwidth,140H 
+    je          L$52 
+    cmp         dword ptr FLAT:_gamemode,2 
+    jne         L$53 
+    lea         eax,0cH[esp] 
+L$41:
+    mov         edx,65H 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    xor         ecx,ecx 
+    mov         edx,dword ptr FLAT:_screens+4 
+    mov         dword ptr 14H[esp],eax 
+    mov         dword ptr 18H[esp],ecx 
+    lea         eax,[eax] 
+    nop         
+L$42:
+    mov         eax,dword ptr 18H[esp] 
+    and         eax,3fH 
+    mov         ebp,dword ptr 14H[esp] 
+    shl         eax,6 
+    xor         ebx,ebx 
+    add         ebp,eax 
+L$43:
+    mov         ecx,40H 
+    mov         esi,ebp 
+    mov         edi,edx 
+    push        edi 
+    mov         eax,ecx 
+    shr         ecx,2 
+    rep movsd   
+    mov         cl,al 
+    and         cl,3 
+    rep movsb   
+    pop         edi 
+    inc         ebx 
+    add         edx,40H 
+    cmp         ebx,5 
+    jl          L$43 
+    mov         ebx,dword ptr 18H[esp] 
+    inc         ebx 
+    mov         dword ptr 18H[esp],ebx 
+    cmp         ebx,0a8H 
+    jl          L$42 
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$60 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    xor         ebp,ebp 
+    mov         esi,eax 
+    cmp         dword ptr FLAT:_scaledviewwidth,0 
+    jle         L$45 
+    mov         edi,1 
+L$44:
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    mov         ecx,esi 
+    mov         ebx,edi 
+    sub         edx,8 
+    add         eax,ebp 
+    add         ebp,8 
+    call        near ptr FLAT:V_DrawPatch_ 
+    cmp         ebp,dword ptr FLAT:_scaledviewwidth 
+    jl          L$44 
+L$45:
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$61 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    xor         ebp,ebp 
+    mov         esi,eax 
+    cmp         dword ptr FLAT:_scaledviewwidth,0 
+    jle         L$47 
+    mov         edi,1 
+L$46:
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    mov         ecx,esi 
+    mov         ebx,edi 
+    add         edx,dword ptr FLAT:_viewheight 
+    add         eax,ebp 
+    add         ebp,8 
+    call        near ptr FLAT:V_DrawPatch_ 
+    cmp         ebp,dword ptr FLAT:_scaledviewwidth 
+    jl          L$46 
+L$47:
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$62 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    xor         ebp,ebp 
+    mov         esi,eax 
+    cmp         dword ptr FLAT:_viewheight,0 
+    jle         L$49 
+    mov         edi,1 
+L$48:
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    mov         ecx,esi 
+    mov         ebx,edi 
+    sub         eax,8 
+    add         edx,ebp 
+    add         ebp,8 
+    call        near ptr FLAT:V_DrawPatch_ 
+    cmp         ebp,dword ptr FLAT:_viewheight 
+    jl          L$48 
+L$49:
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$63 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    xor         ebp,ebp 
+    mov         edi,eax 
+    cmp         dword ptr FLAT:_viewheight,0 
+    jle         L$51 
+L$50:
+    mov         ebx,1 
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    mov         ecx,edi 
+    add         eax,dword ptr FLAT:_scaledviewwidth 
+    add         edx,ebp 
+    add         ebp,8 
+    call        near ptr FLAT:V_DrawPatch_ 
+    cmp         ebp,dword ptr FLAT:_viewheight 
+    jl          L$50 
+L$51:
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$64 
+    mov         ebx,1 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         esi,dword ptr FLAT:_viewwindowx 
+    mov         ecx,eax 
+    sub         esi,8 
+    sub         edx,8 
+    mov         eax,esi 
+    call        near ptr FLAT:V_DrawPatch_ 
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$65 
+    mov         ebx,1 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         ecx,eax 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    sub         edx,8 
+    add         eax,dword ptr FLAT:_scaledviewwidth 
+    call        near ptr FLAT:V_DrawPatch_ 
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$66 
+    mov         ebx,1 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         ecx,eax 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    add         edx,dword ptr FLAT:_viewheight 
+    sub         eax,8 
+    call        near ptr FLAT:V_DrawPatch_ 
+    mov         edx,65H 
+    mov         eax,offset FLAT:L$67 
+    mov         ebx,1 
+    call        near ptr FLAT:W_CacheLumpName_ 
+    mov         edx,dword ptr FLAT:_viewwindowy 
+    mov         ecx,eax 
+    mov         eax,dword ptr FLAT:_viewwindowx 
+    add         edx,dword ptr FLAT:_viewheight 
+    add         eax,dword ptr FLAT:_scaledviewwidth 
+    call        near ptr FLAT:V_DrawPatch_ 
+L$52:
+    add         esp,1cH 
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$53:
+    mov         eax,esp 
+    jmp         near ptr L$41 
+    lea         eax,[eax] 
+R_VideoErase_:
+    push        ecx 
+    push        esi 
+    push        edi 
+    mov         esi,dword ptr FLAT:_screens+4 
+    mov         edi,dword ptr FLAT:_screens 
+    mov         ecx,edx 
+    add         esi,eax 
+    add         edi,eax 
+    push        edi 
+    mov         eax,ecx 
+    shr         ecx,2 
+    rep movsd   
+    mov         cl,al 
+    and         cl,3 
+    rep movsb   
+    pop         edi 
+    pop         edi 
+    pop         esi 
+    pop         ecx 
+    ret         
+    lea         eax,[eax] 
+    nop         
+R_DrawViewBorder_:
+    push        ebx 
+    push        ecx 
+    push        edx 
+    push        esi 
+    push        edi 
+    push        ebp 
+    cmp         dword ptr FLAT:_scaledviewwidth,140H 
+    jne         L$54 
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+L$54:
+    mov         edx,0a8H 
+    sub         edx,dword ptr FLAT:_viewheight 
+    mov         eax,edx 
+    sar         edx,1fH 
+    sub         eax,edx 
+    sar         eax,1 
+    mov         edx,140H 
+    sub         edx,dword ptr FLAT:_scaledviewwidth 
+    mov         ecx,eax 
+    mov         eax,edx 
+    sar         edx,1fH 
+    sub         eax,edx 
+    sar         eax,1 
+    imul        edi,ecx,140H 
+    lea         ebx,[edi+eax] 
+    mov         esi,eax 
+    mov         edx,ebx 
+    xor         eax,eax 
+    call        near ptr FLAT:R_VideoErase_ 
+    mov         ebp,dword ptr FLAT:_viewheight 
+    mov         eax,ecx 
+    add         eax,ebp 
+    imul        eax,140H 
+    mov         edx,ebx 
+    mov         ebx,1 
+    lea         ecx,140H[edi] 
+    sub         eax,esi 
+    sub         ecx,esi 
+    call        near ptr FLAT:R_VideoErase_ 
+    add         esi,esi 
+    cmp         ebx,dword ptr FLAT:_viewheight 
+    jge         L$56 
+L$55:
+    mov         edx,esi 
+    mov         eax,ecx 
+    call        near ptr FLAT:R_VideoErase_ 
+    inc         ebx 
+    add         ecx,140H 
+    cmp         ebx,dword ptr FLAT:_viewheight 
+    jl          L$55 
+L$56:
+    mov         ecx,0a8H 
+    mov         ebx,140H 
+    xor         edx,edx 
+    xor         eax,eax 
+    call        near ptr FLAT:V_MarkRect_ 
+    pop         ebp 
+    pop         edi 
+    pop         esi 
+    pop         edx 
+    pop         ecx 
+    pop         ebx 
+    ret         
+_TEXT		ENDS
+CONST		SEGMENT	DWORD PUBLIC USE32 'DATA'
+L$57:
+    DB	52H, 5fH, 44H, 72H, 61H, 77H, 43H, 6fH
+    DB	6cH, 75H, 6dH, 6eH, 3aH, 20H, 25H, 69H
+    DB	20H, 74H, 6fH, 20H, 25H, 69H, 20H, 61H
+    DB	74H, 20H, 25H, 69H, 0
+L$58:
+    DB	52H, 5fH, 44H, 72H, 61H, 77H, 46H, 75H
+    DB	7aH, 7aH, 43H, 6fH, 6cH, 75H, 6dH, 6eH
+    DB	3aH, 20H, 25H, 69H, 20H, 74H, 6fH, 20H
+    DB	25H, 69H, 20H, 61H, 74H, 20H, 25H, 69H
+    DB	0
+L$59:
+    DB	52H, 5fH, 44H, 72H, 61H, 77H, 53H, 70H
+    DB	61H, 6eH, 3aH, 20H, 25H, 69H, 20H, 74H
+    DB	6fH, 20H, 25H, 69H, 20H, 61H, 74H, 20H
+    DB	25H, 69H, 0
+L$60:
+    DB	62H, 72H, 64H, 72H, 5fH, 74H, 0
+L$61:
+    DB	62H, 72H, 64H, 72H, 5fH, 62H, 0
+L$62:
+    DB	62H, 72H, 64H, 72H, 5fH, 6cH, 0
+L$63:
+    DB	62H, 72H, 64H, 72H, 5fH, 72H, 0
+L$64:
+    DB	62H, 72H, 64H, 72H, 5fH, 74H, 6cH, 0
+L$65:
+    DB	62H, 72H, 64H, 72H, 5fH, 74H, 72H, 0
+L$66:
+    DB	62H, 72H, 64H, 72H, 5fH, 62H, 6cH, 0
+L$67:
+    DB	62H, 72H, 64H, 72H, 5fH, 62H, 72H, 0
+
+CONST		ENDS
+CONST2		SEGMENT	DWORD PUBLIC USE32 'DATA'
+_rcsid:
+    DB	24H, 49H, 64H, 3aH, 20H, 72H, 5fH, 64H
+    DB	72H, 61H, 77H, 2eH, 63H, 2cH, 76H, 20H
+    DB	31H, 2eH, 34H, 20H, 31H, 39H, 39H, 37H
+    DB	2fH, 30H, 32H, 2fH, 30H, 33H, 20H, 31H
+    DB	36H, 3aH, 34H, 37H, 3aH, 35H, 35H, 20H
+    DB	62H, 31H, 20H, 45H, 78H, 70H, 20H, 24H
+    DB	0
+
+CONST2		ENDS
+_DATA		SEGMENT	DWORD PUBLIC USE32 'DATA'
+_fuzzoffset:
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	0c0H, 0feH, 0ffH, 0ffH, 0c0H, 0feH, 0ffH, 0ffH
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+    DB	0c0H, 0feH, 0ffH, 0ffH, 0c0H, 0feH, 0ffH, 0ffH
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	0c0H, 0feH, 0ffH, 0ffH, 0c0H, 0feH, 0ffH, 0ffH
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	40H, 1, 0, 0, 0c0H, 0feH, 0ffH, 0ffH
+    DB	40H, 1, 0, 0, 40H, 1, 0, 0
+    DB	0c0H, 0feH, 0ffH, 0ffH, 40H, 1, 0, 0
+_fuzzpos:
+    DB	0, 0, 0, 0
+
+_DATA		ENDS
+_BSS		SEGMENT	DWORD PUBLIC USE32 'BSS'
+    ORG 0
+_ylookup    LABEL	BYTE
+    ORG 0d00H
+_columnofs    LABEL	BYTE
+    ORG 1e80H
+_translations    LABEL	BYTE
+    ORG 2180H
+_dscount    LABEL	BYTE
+    ORG 2184H
+_viewimage    LABEL	BYTE
+    ORG 2188H
+_dccount    LABEL	BYTE
+    ORG 218cH
+_ds_xstep    LABEL	BYTE
+    ORG 2190H
+_ds_ystep    LABEL	BYTE
+    ORG 2194H
+_ds_x1    LABEL	BYTE
+    ORG 2198H
+_ds_x2    LABEL	BYTE
+    ORG 219cH
+_ds_yfrac    LABEL	BYTE
+    ORG 21a0H
+_ds_source    LABEL	BYTE
+    ORG 21a4H
+_translationtables    LABEL	BYTE
+    ORG 21a8H
+_ds_y    LABEL	BYTE
+    ORG 21acH
+_ds_colormap    LABEL	BYTE
+    ORG 21b0H
+_ds_xfrac    LABEL	BYTE
+    ORG 21b4H
+_dc_translation    LABEL	BYTE
+    ORG 21b8H
+_dc_texturemid    LABEL	BYTE
+    ORG 21bcH
+_dc_iscale    LABEL	BYTE
+    ORG 21c0H
+_dc_source    LABEL	BYTE
+    ORG 21c4H
+_dc_x    LABEL	BYTE
+    ORG 21c8H
+_dc_yh    LABEL	BYTE
+    ORG 21ccH
+_dc_yl    LABEL	BYTE
+    ORG 21d0H
+_dc_colormap    LABEL	BYTE
+    ORG 21d4H
+_viewwindowy    LABEL	BYTE
+    ORG 21d8H
+_viewwindowx    LABEL	BYTE
+    ORG 21dcH
+_scaledviewwidth    LABEL	BYTE
+    ORG 21e0H
+_viewheight    LABEL	BYTE
+    ORG 21e4H
+_viewwidth    LABEL	BYTE
+    ORG 21e8H
+_BSS		ENDS
+
+		END
