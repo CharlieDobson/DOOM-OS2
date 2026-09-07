@@ -81,6 +81,9 @@ static int	numsearchdirs;
 static os2iwad_t	iwads[MAX_IWAD_CHOICES];
 static int		numiwads;
 
+// Defined further down, but called by D_AddCandidate above it.
+static void CanonicalPath (char *in, char *out);
+
 
 //
 // LumpNameIs

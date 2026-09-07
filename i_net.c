@@ -112,7 +112,7 @@ static boolean		tcpipReady = false;
 //
 static boolean I_LoadTcpip (void)
 {
-    UCHAR	failed[CCHMAXPATH];
+    CHAR	failed[CCHMAXPATH];
 
     if (tcpipReady)
 	return true;

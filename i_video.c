@@ -139,6 +139,47 @@ static boolean	diveBlitterOK	= false;	// ...and the blitter is current
 
 
 //
+//  Software scaling.
+//
+// DIVE is asked to stretch 320x200 up to the window, and on at least one
+// display driver it gets that wrong: the picture comes out repeated and
+// skewed as soon as the window is wider than the source.  Blitted 1:1 the
+// same driver is perfect -- which is the whole basis of what follows.  Do the
+// scaling here, hand DIVE an image that is already the size of the window,
+// and let it copy pixel for pixel.
+//
+// Only engaged when a horizontal scale would otherwise be needed.  A client
+// area exactly SCREENWIDTH across asks DIVE for no horizontal scaling at all,
+// and that case is known good and costs nothing -- which matters, because it
+// is the default window size and the one a 486 will be running.  Once the
+// buffer exists it stays in use, rather than handing the source back and
+// forth between two arrangements every time the window is dragged.
+//
+static byte*	scalebuf	= NULL;		// DIVE's source when scaling
+static ULONG	scalepitch	= 0;		// bytes per row of scalebuf
+static ULONG	scalerows	= 0;		// rows it can hold
+static ULONG	scalew		= 0;		// width in use
+static ULONG	scaleh		= 0;		// height in use
+static int*	scalexmap	= NULL;		// dst x -> src x
+static boolean	swScale		= false;	// scaling this frame?
+static boolean	diveStretch	= false;	// -divestretch: trust DIVE
+static boolean	scaleWarned	= false;
+
+// Which buffer DIVE's image buffer currently refers to.  Tracked because
+// giving up on scaling half way -- a window grown past the limit, or an
+// allocation that failed -- has to point DIVE back at the frame buffer.
+// Leaving it aimed at the scaling buffer and then describing that buffer as a
+// 320x200 image would blit a stale picture read at the wrong pitch.
+static boolean	diveOnScale	= false;
+
+// A window bigger than this is not scaled.  There is no sensible reason for
+// one, and the limit stops an absurd size from asking for an absurd
+// allocation on a machine that has not got it.
+#define MAX_SCALE_CX	2048
+#define MAX_SCALE_CY	1536
+
+
+//
 //  GPI fallback state.
 //
 // GpiDrawBits reads its source bottom-up, and DOOM's frame buffer is
@@ -225,6 +266,15 @@ static boolean	os2_quitRequested = false;
 // the window is given.
 //
 static boolean	stretchToWindow	= false;
+
+// -noscale: ask DIVE for a 1:1 blit instead of a stretched one.
+//
+// Purely to tell two faults apart.  If a picture that is wrong when stretched
+// into a big window comes out right when it is blitted at 320x200 into the
+// corner of the same window, then the stretch is what is broken and the fix is
+// to stop asking the driver for one.  If it is wrong both ways, the stretch is
+// innocent and the fault is in where the blit is being put.
+static boolean	noScale		= false;
 static PFNWP	pfnFrameProc	= NULL;		// the frame's own procedure
 
 // Remembered across runs through DEFAULT.CFG.  M_MISC.C has these in its
@@ -550,6 +600,141 @@ static void I_OS2_WindowActivated (boolean active)
 
 
 //
+// PointDiveAt
+//
+// Hands DIVE a different source buffer.  An image buffer records the address
+// and the row pitch at allocation time and there is no call to say "same
+// buffer, new shape", so a change to either means allocating another one.
+//
+// The new buffer is allocated before the old one is released, so that a
+// refusal leaves the previous arrangement intact and still blitting.
+//
+static boolean PointDiveAt (byte* buf, ULONG w, ULONG h, ULONG pitch)
+{
+    ULONG	newnum = 0;
+
+    if (pDiveAllocImageBuffer (hDive, &newnum, FOURCC_LUT8, w, h, pitch, buf)
+	!= DIVE_SUCCESS)
+	return false;
+
+    if (diveBufNum)
+	pDiveFreeImageBuffer (hDive, diveBufNum);
+
+    diveBufNum = newnum;
+    return true;
+}
+
+
+//
+// EnsureScaleBuffer
+//
+// Makes scalebuf big enough for a cx by cy picture and builds the column map
+// that goes with it.  Grows but never shrinks: a window dragged smaller has
+// no reason to give the memory back only to ask for it again on the way out,
+// and every growth costs a DIVE buffer re-registration.
+//
+static boolean EnsureScaleBuffer (LONG cx, LONG cy)
+{
+    ULONG	x;
+
+    if (cx <= 0 || cy <= 0 || cx > MAX_SCALE_CX || cy > MAX_SCALE_CY)
+	return false;
+
+    if ((ULONG)cx > scalepitch || (ULONG)cy > scalerows)
+    {
+	PVOID	mem;
+	int*	map;
+	ULONG	neww = (ULONG)cx > scalepitch ? (ULONG)cx : scalepitch;
+	ULONG	newh = (ULONG)cy > scalerows  ? (ULONG)cy : scalerows;
+
+	// DosAllocMem for the same reason the frame buffer uses it: DIVE
+	// gives the address to the display driver, which wants whole
+	// committed pages rather than something inside the C heap.
+	if (DosAllocMem (&mem, neww * newh,
+			 PAG_READ | PAG_WRITE | PAG_COMMIT) != NO_ERROR)
+	    return false;
+
+	map = (int *) malloc (neww * sizeof(int));
+	if (!map)
+	{
+	    DosFreeMem (mem);
+	    return false;
+	}
+
+	if (!PointDiveAt ((byte *)mem, neww, newh, neww))
+	{
+	    free (map);
+	    DosFreeMem (mem);
+	    return false;
+	}
+
+	diveOnScale = true;
+
+	if (scalebuf)
+	    DosFreeMem ((PVOID)scalebuf);
+	if (scalexmap)
+	    free (scalexmap);
+
+	scalebuf   = (byte *)mem;
+	scalexmap  = map;
+	scalepitch = neww;
+	scalerows  = newh;
+	scalew     = 0;			// forces the map to be rebuilt
+
+	memset (scalebuf, 0, neww * newh);
+    }
+    else if (!diveOnScale)
+    {
+	// Big enough already, but DIVE is looking at the frame buffer.
+	if (!PointDiveAt (scalebuf, scalepitch, scalerows, scalepitch))
+	    return false;
+
+	diveOnScale = true;
+    }
+
+    if ((ULONG)cx != scalew)
+    {
+	for (x = 0; x < (ULONG)cx; x++)
+	    scalexmap[x] = (int)((x * SCREENWIDTH) / (ULONG)cx);
+
+	scalew = (ULONG)cx;
+    }
+
+    scaleh = (ULONG)cy;
+    return true;
+}
+
+
+//
+// ScaleFrame
+//
+// Nearest neighbour, eight bits in and eight bits out, straight into the
+// buffer DIVE is about to read.  Nothing cleverer is wanted: the values are
+// palette indices, so averaging two of them produces a colour that has
+// nothing to do with either.
+//
+static void ScaleFrame (void)
+{
+    ULONG	y;
+    byte*	dst = scalebuf;
+
+    for (y = 0; y < scaleh; y++)
+    {
+	byte*	src = blitbuf + (y * SCREENHEIGHT / scaleh) * SCREENWIDTH;
+	int*	xm  = scalexmap;
+	ULONG	x;
+
+	for (x = 0; x < scalew; x++)
+	    dst[x] = src[xm[x]];
+
+	dst += scalepitch;
+    }
+}
+
+
+
+
+//
 // SetupBlitter
 //
 // Tells DIVE where the window is on the screen, how big it is, and which
@@ -578,6 +763,69 @@ static void SetupBlitter (void)
 	return;
     if ((swp.fl & SWP_MINIMIZE) || swp.cx <= 0 || swp.cy <= 0)
 	return;
+
+    //
+    // Decide who scales.
+    //
+    // A client area exactly SCREENWIDTH across needs no horizontal scaling,
+    // which is the case DIVE handles correctly, so leave it alone.  Anything
+    // else is scaled here into a buffer the size of the window and blitted
+    // 1:1.  Once the buffer exists it keeps being used, so that dragging the
+    // window across the 320 boundary does not swap the source back and forth.
+    //
+    swScale = false;
+
+    if (!noScale && !diveStretch
+	&& (scalebuf != NULL || (ULONG)swp.cx != SCREENWIDTH))
+    {
+	swScale = EnsureScaleBuffer (swp.cx, swp.cy);
+
+	if (!swScale && !scaleWarned)
+	{
+	    scaleWarned = true;
+	    printf ("SetupBlitter: cannot scale in software (%ix%i), falling"
+		    " back on DIVE's stretch.\n", (int)swp.cx, (int)swp.cy);
+	}
+    }
+
+    // DIVE must be looking at whichever buffer is about to be blitted.  If
+    // scaling was in use and has just been abandoned, the image buffer still
+    // refers to the scaling buffer; describing that as a 320x200 image would
+    // blit a stale picture read at the wrong pitch.
+    if (!swScale && diveOnScale)
+    {
+	if (!PointDiveAt (blitbuf, SCREENWIDTH, SCREENHEIGHT, SCREENWIDTH))
+	    return;			// nothing safe to blit: leave the
+					// blitter off until the next call
+
+	diveOnScale = false;
+    }
+
+    //
+    // Record the destination size, but only when it changes.
+    //
+    // SetupBlitter runs on every move, every resize and every visible region
+    // change -- something passing in front of the window is enough -- so
+    // logging unconditionally would fill DOOM.LOG with the same line and,
+    // since the log is opened write-through, put a disk flush behind each
+    // one.  Only a size that is actually new tells us anything.
+    //
+    {
+	static LONG	lastcx = -1;
+	static LONG	lastcy = -1;
+
+	if (swp.cx != lastcx || swp.cy != lastcy)
+	{
+	    lastcx = swp.cx;
+	    lastcy = swp.cy;
+	    printf ("SetupBlitter: %ix%i %s a %ix%i client area.\n",
+		    SCREENWIDTH, SCREENHEIGHT,
+		    noScale ? "blitted 1:1 into"
+			    : swScale ? "scaled here and blitted 1:1 into"
+				      : "stretched by DIVE to",
+		    (int)swp.cx, (int)swp.cy);
+	}
+    }
 
     // Where the client area's bottom left corner sits on the desktop.  DIVE
     // blits to the screen, not to the window, so it has to be told.
@@ -625,15 +873,40 @@ static void SetupBlitter (void)
     sb.fInvert			= FALSE;
 
     sb.fccSrcColorFormat	= FOURCC_LUT8;	// 8-bit palettised
-    sb.ulSrcWidth		= SCREENWIDTH;
-    sb.ulSrcHeight		= SCREENHEIGHT;
+    // When scaling here, the source is the already scaled image and the
+    // destination below is the same size, so DIVE copies pixel for pixel.
+    sb.ulSrcWidth		= swScale ? scalew : SCREENWIDTH;
+    sb.ulSrcHeight		= swScale ? scaleh : SCREENHEIGHT;
     sb.ulSrcPosX		= 0;
     sb.ulSrcPosY		= 0;
     sb.ulDitherType		= 0;
 
     sb.fccDstColorFormat	= FOURCC_SCRN;	// whatever the screen is
-    sb.ulDstWidth		= swp.cx;	// stretch to fill the window
-    sb.ulDstHeight		= swp.cy;
+
+    //
+    // Normally the destination is the whole client area and the driver
+    // stretches 320x200 to fit it.  Under -noscale it is 320x200 exactly, so
+    // the driver copies pixel for pixel and does no scaling at all.
+    //
+    // Deliberately not centred.  Centring means moving the image inside the
+    // destination, and DIVE's destination offset, its screen position and the
+    // visible-region rectangles all have to agree about which origin they are
+    // measured from.  Getting that wrong would produce a misplaced picture --
+    // which is one of the two things this switch exists to tell apart.  In the
+    // corner it is, and the only question asked is whether the image itself is
+    // right.
+    //
+    if (noScale)
+    {
+	sb.ulDstWidth		= SCREENWIDTH;
+	sb.ulDstHeight		= SCREENHEIGHT;
+    }
+    else
+    {
+	sb.ulDstWidth		= swp.cx;	// stretch to fill the window
+	sb.ulDstHeight		= swp.cy;
+    }
+
     sb.lDstPosX			= 0;
     sb.lDstPosY			= 0;
 
@@ -1065,7 +1338,15 @@ void I_FinishUpdate (void)
     if (useDive)
     {
 	if (diveBlitterOK)
+	{
+	    // Only when the blitter is current: scaling into a buffer that is
+	    // about to be resized, or that DIVE has been told nothing about,
+	    // would be work thrown away at best.
+	    if (swScale)
+		ScaleFrame ();
+
 	    pDiveBlitImage (hDive, diveBufNum, DIVE_BUFFER_SCREEN);
+	}
     }
     else
 	GpiUpdate ();
@@ -1124,7 +1405,7 @@ void I_SetPalette (byte* palette)
 //
 static boolean LoadDive (void)
 {
-    UCHAR	failed[CCHMAXPATH];
+    CHAR	failed[CCHMAXPATH];
 
     if (DosLoadModule (failed, sizeof(failed), (PSZ)"DIVE", &hmodDive)
 	!= NO_ERROR)
@@ -1245,6 +1526,12 @@ void I_InitGraphics (void)
 
     if (M_CheckParm ("-stretch"))
 	stretchToWindow = true;
+
+    if (M_CheckParm ("-noscale"))
+	noScale = true;
+
+    if (M_CheckParm ("-divestretch"))
+	diveStretch = true;
 
     if (M_CheckParm ("-keydebug"))
 	keydebug = true;
@@ -1487,6 +1774,24 @@ void I_ShutdownGraphics (void)
 
 	pDiveFreeImageBuffer (hDive, diveBufNum);
 	pDiveClose (hDive);
+
+	diveBufNum = 0;
+
+	// The scaling buffer is DIVE's source, so it outlives nothing: the
+	// image buffer that referred to it has just been freed.
+	if (scalebuf)
+	{
+	    DosFreeMem ((PVOID)scalebuf);
+	    scalebuf = NULL;
+	}
+	if (scalexmap)
+	{
+	    free (scalexmap);
+	    scalexmap = NULL;
+	}
+	scalepitch = scalerows = scalew = scaleh = 0;
+	swScale = false;
+	diveOnScale = false;
 
 	useDive = false;
 	diveBlitterOK = false;

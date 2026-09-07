@@ -72,6 +72,17 @@ void	R_DrawTranslatedColumnLow (void);
 void	R_DrawColumnA (void);
 void	R_DrawSpanA (void);
 
+// The same two behind this build's RANGECHECK, which the assembly itself does
+// not do.  R_ExecuteSetViewSize picks these when RANGECHECK is defined; they
+// are defined in R_DRAW.C only then.
+//
+// Declared unconditionally on purpose.  Wrapping a declaration in #ifdef
+// RANGECHECK makes it depend on DOOMDEF.H having been included first, and a
+// declaration that goes missing on include order is how a call ends up with a
+// signature the compiler invented.
+void	R_DrawColumnAChecked (void);
+void	R_DrawSpanAChecked (void);
+
 void
 R_VideoErase
 ( unsigned	ofs,

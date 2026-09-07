@@ -352,6 +352,12 @@ static int		plPasses	= 0;
 
 static boolean I_StartPass (void);
 
+// Refills one playlist block from the mixer.  Defined below I_StartPass,
+// which calls it, so it needs saying here: without a prototype the compiler
+// invents one returning int, and an invented signature is not one the
+// register calling convention has to agree with.
+static void I_FillBlock (ULONG which);
+
 static void I_ReportSound (void);
 
 // Guards the mixing channel table, which two threads touch: the game thread

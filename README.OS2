@@ -53,6 +53,13 @@ Command line options, beyond the ones every DOOM has:
                     4:3.  See "The window is 4:3" below.
     -nodive         Skip DIVE and use the GPI fallback.  Useful for telling
                     the two apart when something looks wrong.
+    -divestretch    Let DIVE scale the picture, instead of scaling it here.
+                    Faster where the display driver gets it right.  See
+                    "Scaling is done in software" below.
+    -noscale        Blit at 320x200 into the corner of the window, scaling
+                    nothing.  A diagnostic, not a way to play.
+    -noasm          Use the C versions of the two renderer inner loops
+                    instead of the assembly ones.
     -nograbmouse    Leave the mouse pointer alone.  Without this the pointer
                     is captured and hidden whenever the window is active.
     -nosound        Do not open the audio device at all.
@@ -171,6 +178,37 @@ How it works
   clamped to the screen so that a position saved on a larger desktop cannot
   put the title bar somewhere it cannot be dragged back from.
 
+
+**Scaling is done in software, not by DIVE.**
+
+  DIVE will happily be told to stretch a 320x200 image into whatever the
+  window is, and on a machine whose display driver does that correctly it is
+  the best possible arrangement: the driver does the work, sometimes in
+  hardware, and the game does nothing.
+
+  It is not reliable.  On at least one 2.x era driver the stretch is wrong
+  the moment the window is wider than the source: the picture comes out with
+  content repeated to the left of where it belongs and walls appearing to
+  change orientation as the view turns.  The same driver blits the same
+  buffer perfectly at 1:1, which is what "-noscale" was added to demonstrate
+  and what the fix relies on.
+
+  So the picture is scaled here -- nearest neighbour, eight bits in and eight
+  bits out, into a buffer the size of the client area -- and DIVE is asked
+  only to copy it pixel for pixel.  Nearest neighbour rather than anything
+  smoother because the values are palette indices: the average of two of them
+  is a colour with no relation to either.
+
+  It is only done when it is needed.  A client area exactly 320 pixels across
+  needs no horizontal scaling, and vertical-only stretching is the case that
+  works, so the default 320x240 window still costs nothing at all.  That
+  matters: the default window is the one a 486 will be running.  Once a
+  larger size has been asked for the buffer stays in use, rather than handing
+  the source back and forth every time the window crosses 320.
+
+  -divestretch goes back to letting DIVE scale, for a driver that does it
+  properly and a machine that would rather spend the memory bandwidth
+  elsewhere.
 **Sound.**  MMPM/2 DART, at 11025 Hz 16-bit stereo, which is what DOOM's
   mixer produces.
 

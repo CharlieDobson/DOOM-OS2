@@ -222,6 +222,7 @@ void R_DrawColumn (void)
 void R_DrawColumnLow (void) 
 { 
     int			count; 
+    int			x;
     byte*		dest; 
     byte*		dest2;
     fixed_t		frac;
@@ -239,16 +240,29 @@ void R_DrawColumnLow (void)
 	|| dc_yh >= SCREENHEIGHT)
     {
 	
-	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x);
+	I_Error ("R_DrawColumnLow: %i to %i at %i", dc_yl, dc_yh, dc_x);
     }
     //	dccount++; 
 #endif 
-    // Blocky mode, need to multiply by 2.
-    dc_x <<= 1;
-    
-    dest = ylookup[dc_yl] + columnofs[dc_x];
-    dest2 = ylookup[dc_yl] + columnofs[dc_x+1];
-    
+    //
+    // Blocky mode, need to multiply by 2 -- into a local, NOT back into dc_x.
+    //
+    // id's code does "dc_x <<= 1" and leaves it doubled.  Two callers iterate
+    // columns using dc_x itself as the loop variable -- R_DrawVisSprite in
+    // R_THINGS.C and R_RenderMaskedSegRange in R_SEGS.C -- so this doubled
+    // their counter underneath them.  A sprite drew its first column, the
+    // counter jumped past x2, and the loop ended: every sprite and every
+    // masked texture came out as one doubled column, a thin vertical bar.
+    //
+    // R_DrawMaskedColumn also re-reads dc_x between the posts of a single
+    // column, to clip against mfloorclip and mceilingclip, and was indexing
+    // those at the doubled value for every post after the first.
+    //
+    x = dc_x << 1;
+
+    dest = ylookup[dc_yl] + columnofs[x];
+    dest2 = ylookup[dc_yl] + columnofs[x+1];
+
     fracstep = dc_iscale; 
     frac = dc_texturemid + (dc_yl-centery)*fracstep;
     
@@ -658,6 +672,7 @@ void R_DrawSpanLow (void)
     byte*		dest; 
     int			count;
     int			spot; 
+    int			x;
 	 
 #ifdef RANGECHECK 
     if (ds_x2 < ds_x1
@@ -665,7 +680,7 @@ void R_DrawSpanLow (void)
 	|| ds_x2>=SCREENWIDTH  
 	|| (unsigned)ds_y>SCREENHEIGHT)
     {
-	I_Error( "R_DrawSpan: %i to %i at %i",
+	I_Error( "R_DrawSpanLow: %i to %i at %i",
 		 ds_x1,ds_x2,ds_y);
     }
 //	dscount++; 
@@ -674,14 +689,35 @@ void R_DrawSpanLow (void)
     xfrac = ds_xfrac; 
     yfrac = ds_yfrac; 
 
-    // Blocky mode, need to multiply by 2.
-    ds_x1 <<= 1;
-    ds_x2 <<= 1;
-    
-    dest = ylookup[ds_y] + columnofs[ds_x1];
-  
-    
-    count = ds_x2 - ds_x1; 
+    //
+    // How wide this span is, in source samples, taken BEFORE the doubling.
+    //
+    // id's code takes the difference afterwards, which measures screen pixels
+    // rather than samples -- and then the loop below writes two pixels for
+    // every one of them.  A span of n samples came out 4n+2 pixels wide
+    // instead of 2n+2, so every floor and ceiling ran off the right hand end
+    // of its row and wrapped onto the next: the same piece of floor showing
+    // up again further left and a line down, over the top of walls that had
+    // already been drawn.
+    //
+    // R_DrawColumnLow makes no equivalent miscount: its count is a number of
+    // rows, which its own doubling does not touch.
+    //
+    count = ds_x2 - ds_x1;
+
+    //
+    // Blocky mode, need to multiply by 2 -- into a local, for the same reason
+    // R_DrawColumnLow now uses one.
+    //
+    // Nothing currently reads ds_x1 or ds_x2 after spanfunc returns, so this
+    // fixes no live bug.  But a drawer that rewrites the globals its caller
+    // set is exactly what produced the vertical bars, and there is no reason
+    // to leave the habit in place for the next person to trip over.
+    //
+    x = ds_x1 << 1;
+
+    dest = ylookup[ds_y] + columnofs[x];
+
     do 
     { 
 	spot = ((yfrac>>(16-6))&(63*64)) + ((xfrac>>16)&63);
@@ -695,6 +731,55 @@ void R_DrawSpanLow (void)
 
     } while (count--); 
 }
+
+//
+// R_DrawColumnAChecked
+// R_DrawSpanAChecked
+//
+// RANGECHECK is on in this build -- see DOOMDEF.H -- which means every drawer
+// in this file validates dc_x/dc_yl/dc_yh, or ds_x1/ds_x2/ds_y, and calls
+// I_Error rather than write somewhere it should not.  The assembly versions
+// in R_DRAWA.ASM do not: they are the inner loop and nothing else.
+//
+// So pointing colfunc straight at the assembly did not only make the renderer
+// faster.  It quietly removed the one thing that was turning a bad column into
+// a diagnosable error instead of a scribble across the framebuffer -- and a
+// scribble across the framebuffer is indistinguishable, from the sofa, from
+// the assembly itself being wrong.
+//
+// These wrappers put the check back.  They cost one call per column in a
+// RANGECHECK build and nothing at all in a build without it.
+//
+// The message names the assembly routine.  id's own R_DrawColumnLow prints
+// "R_DrawColumn", which makes an error raised there impossible to tell from
+// one raised by the real R_DrawColumn; there is no reason to copy that.
+//
+#ifdef RANGECHECK
+
+void R_DrawColumnAChecked (void)
+{
+    if ((unsigned)dc_x >= SCREENWIDTH
+	|| dc_yl < 0
+	|| dc_yh >= SCREENHEIGHT)
+	I_Error ("R_DrawColumnA: %i to %i at %i", dc_yl, dc_yh, dc_x);
+
+    R_DrawColumnA ();
+}
+
+
+void R_DrawSpanAChecked (void)
+{
+    if (ds_x2 < ds_x1
+	|| ds_x1 < 0
+	|| ds_x2 >= SCREENWIDTH
+	|| (unsigned)ds_y > SCREENHEIGHT)
+	I_Error ("R_DrawSpanA: %i to %i at %i", ds_x1, ds_x2, ds_y);
+
+    R_DrawSpanA ();
+}
+
+#endif
+
 
 //
 // R_InitBuffer 

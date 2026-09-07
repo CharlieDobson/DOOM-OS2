@@ -715,10 +715,18 @@ void R_ExecuteSetViewSize (void)
 	//
 	boolean	useasm = M_CheckParm ("-noasm") == 0;
 
+	// RANGECHECK builds go through the checking wrappers: the assembly
+	// does not validate its own parameters, and this build expects every
+	// drawer to.  See R_DRAW.C.
+#ifdef RANGECHECK
+	colfunc = basecolfunc = useasm ? R_DrawColumnAChecked : R_DrawColumn;
+	spanfunc = useasm ? R_DrawSpanAChecked : R_DrawSpan;
+#else
 	colfunc = basecolfunc = useasm ? R_DrawColumnA : R_DrawColumn;
+	spanfunc = useasm ? R_DrawSpanA : R_DrawSpan;
+#endif
 	fuzzcolfunc = R_DrawFuzzColumn;
 	transcolfunc = R_DrawTranslatedColumn;
-	spanfunc = useasm ? R_DrawSpanA : R_DrawSpan;
     }
     else
     {
@@ -728,6 +736,25 @@ void R_ExecuteSetViewSize (void)
 	spanfunc = R_DrawSpanLow;
     }
 
+
+    //
+    // Say what the view actually is, in DOOM.LOG.
+    //
+    // This runs at startup and again every time the screen size or the detail
+    // level changes, which is exactly the set of events worth having a record
+    // of -- and it is the only way to know from here which drawers a machine
+    // in another room is really running.  Low detail never touches the
+    // assembly, so "-noasm made no difference" means nothing at all unless
+    // the detail level is known.
+    //
+    printf ("R_SetViewSize: blocks %i, detail %i, scaledviewwidth %i,"
+	    " viewwidth %i, viewheight %i, centerx %i, centery %i,"
+	    " drawing with %s.\n",
+	    setblocks, detailshift, scaledviewwidth, viewwidth, viewheight,
+	    centerx, centery,
+	    detailshift	     ? "the C low detail pair"
+	    : M_CheckParm ("-noasm") ? "the C full detail pair"
+				     : "the assembly pair");
     R_InitBuffer (scaledviewwidth, viewheight);
 	
     R_InitTextureMapping ();

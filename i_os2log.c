@@ -57,6 +57,7 @@
 #include <time.h>
 
 #define INCL_DOSFILEMGR
+#define INCL_DOSPROCESS			// DosGetInfoBlocks, for LogPath
 #include "os2doom.h"
 
 #include "doomtype.h"
@@ -66,6 +67,54 @@
 static HFILE	loghandle	= (HFILE)0;
 static boolean	logopen		= false;
 static boolean	logtried	= false;
+
+
+//
+// LogPath
+//
+// Where DOOM.LOG goes: beside DOOM.EXE, not in the current directory.
+//
+// Opening it as a bare "DOOM.LOG" puts it wherever the process happens to
+// have been started, which for a program object on the desktop is whatever
+// working directory the object was given -- so the log quietly appears
+// somewhere nobody thinks to look, and a run that was supposed to produce one
+// looks as though it did not.
+//
+// pib_pchcmd is the full path of the running program, so the answer is
+// already to hand and needs no module handle.
+//
+static void LogPath (char *out, int size)
+{
+    PTIB	ptib = NULL;
+    PPIB	ppib = NULL;
+    char*	slash;
+
+    strcpy (out, "DOOM.LOG");
+
+    if (DosGetInfoBlocks (&ptib, &ppib) != NO_ERROR
+	|| ppib == NULL
+	|| ppib->pib_pchcmd == NULL)
+	return;
+
+    if ((int)strlen (ppib->pib_pchcmd) + 10 > size)
+	return;
+
+    strcpy (out, ppib->pib_pchcmd);
+
+    // Back to the last separator and put the log's name after it.  Either
+    // separator counts: OS/2 accepts both and so do the places a path can
+    // come from.
+    slash = strrchr (out, 0x5c);		// a backslash
+    if (!slash)
+	slash = strrchr (out, '/');
+    if (!slash)
+	slash = strrchr (out, ':');
+
+    if (slash)
+	strcpy (slash + 1, "DOOM.LOG");
+    else
+	strcpy (out, "DOOM.LOG");
+}
 
 
 //
@@ -80,6 +129,7 @@ void I_OS2_LogInit (void)
     ULONG	action = 0;
     time_t	now;
     char	line[128];
+    char	path[CCHMAXPATH];
 
     if (logtried)
 	return;
@@ -95,7 +145,9 @@ void I_OS2_LogInit (void)
     // while the game is still running, which is how a hang gets looked at at
     // all.
     //
-    if (DosOpen ((PSZ)"DOOM.LOG", &loghandle, &action, 0, FILE_NORMAL,
+    LogPath (path, sizeof(path));
+
+    if (DosOpen ((PSZ)path, &loghandle, &action, 0, FILE_NORMAL,
 		 OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS,
 		 OPEN_FLAGS_WRITE_THROUGH | OPEN_FLAGS_FAIL_ON_ERROR
 		 | OPEN_FLAGS_NOINHERIT | OPEN_SHARE_DENYNONE

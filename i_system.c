@@ -348,7 +348,7 @@ PFNMCISENDCOMMAND I_OS2_MciEntry (void)
     static HMODULE		hmodMdm = NULLHANDLE;
     static PFNMCISENDCOMMAND	pMci = NULL;
 
-    UCHAR			failed[CCHMAXPATH];
+    CHAR			failed[CCHMAXPATH];
 
     if (tried)
 	return pMci;

@@ -1,6 +1,0 @@
-..\i_net.c(120): Warning! E1181: Parameter 1, sign specifier mismatch
-..\i_net.c(120): Note! I2003: source conversion type is 'unsigned char *'
-..\i_net.c(120): Note! I2004: target conversion type is 'char *'
-..\i_net.c(127): Warning! E1181: Parameter 1, sign specifier mismatch
-..\i_net.c(127): Note! I2003: source conversion type is 'unsigned char *'
-..\i_net.c(127): Note! I2004: target conversion type is 'char *'
