@@ -161,6 +161,7 @@ static ULONG	scalerows	= 0;		// rows it can hold
 static ULONG	scalew		= 0;		// width in use
 static ULONG	scaleh		= 0;		// height in use
 static int*	scalexmap	= NULL;		// dst x -> src x
+static int*	scaleymap	= NULL;		// dst y -> src y
 static boolean	swScale		= false;	// scaling this frame?
 static boolean	diveStretch	= false;	// -divestretch: trust DIVE
 static boolean	scaleWarned	= false;
@@ -644,8 +645,16 @@ static boolean EnsureScaleBuffer (LONG cx, LONG cy)
     {
 	PVOID	mem;
 	int*	map;
+	int*	ymap;
 	ULONG	neww = (ULONG)cx > scalepitch ? (ULONG)cx : scalepitch;
 	ULONG	newh = (ULONG)cy > scalerows  ? (ULONG)cy : scalerows;
+
+	// Round the pitch up to a multiple of four, so that every row starts
+	// on a dword boundary.  ScaleFrame stores pairs of pixels at a time
+	// and copies whole rows with memcpy, and a 486 charges for both when
+	// they straddle an alignment boundary.  The pixels a wider pitch adds
+	// are never blitted: ulSrcWidth is the width in use, not the pitch.
+	neww = (neww + 3) & ~(ULONG)3;
 
 	// DosAllocMem for the same reason the frame buffer uses it: DIVE
 	// gives the address to the display driver, which wants whole
@@ -654,9 +663,12 @@ static boolean EnsureScaleBuffer (LONG cx, LONG cy)
 			 PAG_READ | PAG_WRITE | PAG_COMMIT) != NO_ERROR)
 	    return false;
 
-	map = (int *) malloc (neww * sizeof(int));
-	if (!map)
+	map  = (int *) malloc (neww * sizeof(int));
+	ymap = (int *) malloc (newh * sizeof(int));
+	if (!map || !ymap)
 	{
+	    if (map)  free (map);
+	    if (ymap) free (ymap);
 	    DosFreeMem (mem);
 	    return false;
 	}
@@ -664,6 +676,7 @@ static boolean EnsureScaleBuffer (LONG cx, LONG cy)
 	if (!PointDiveAt ((byte *)mem, neww, newh, neww))
 	{
 	    free (map);
+	    free (ymap);
 	    DosFreeMem (mem);
 	    return false;
 	}
@@ -674,12 +687,16 @@ static boolean EnsureScaleBuffer (LONG cx, LONG cy)
 	    DosFreeMem ((PVOID)scalebuf);
 	if (scalexmap)
 	    free (scalexmap);
+	if (scaleymap)
+	    free (scaleymap);
 
 	scalebuf   = (byte *)mem;
 	scalexmap  = map;
+	scaleymap  = ymap;
 	scalepitch = neww;
 	scalerows  = newh;
-	scalew     = 0;			// forces the map to be rebuilt
+	scalew     = 0;			// forces the maps to be rebuilt
+	scaleh     = 0;
 
 	memset (scalebuf, 0, neww * newh);
     }
@@ -700,7 +717,20 @@ static boolean EnsureScaleBuffer (LONG cx, LONG cy)
 	scalew = (ULONG)cx;
     }
 
-    scaleh = (ULONG)cy;
+    // The row map exists to be read twice: once to find the source row, and
+    // once to notice that it is the same row as last time.  Working it out
+    // here also keeps a 32-bit divide -- forty cycles on a 486, and one per
+    // row -- out of the frame loop.
+    if ((ULONG)cy != scaleh)
+    {
+	ULONG	y;
+
+	for (y = 0; y < (ULONG)cy; y++)
+	    scaleymap[y] = (int)((y * SCREENHEIGHT) / (ULONG)cy);
+
+	scaleh = (ULONG)cy;
+    }
+
     return true;
 }
 
@@ -713,19 +743,68 @@ static boolean EnsureScaleBuffer (LONG cx, LONG cy)
 // palette indices, so averaging two of them produces a colour that has
 // nothing to do with either.
 //
+// This runs once per frame over the whole window, so at 640x480 it is three
+// hundred thousand pixels of work on a machine that has a frame's worth of
+// time for all of DOOM.  The general case below -- a lookup per pixel through
+// the column map -- is the fallback, and the two cases that actually happen
+// avoid it:
+//
+//  - A source row is nearly always used by more than one destination row.
+//    480 rows out of 200 means two or three each, and a repeat is a copy of
+//    the row already sitting above it.  memcpy compiles to rep movsd, which
+//    moves four bytes in about the time the general loop moves one.
+//
+//  - A window exactly twice as wide as the picture -- which is what the 640
+//    option asks for -- needs no column map at all.  Every source pixel is a
+//    pair, so build the pair in a register and store both halves in one go.
+//
 static void ScaleFrame (void)
 {
     ULONG	y;
-    byte*	dst = scalebuf;
+    byte*	dst	 = scalebuf;
+    int		lastrow	 = -1;
 
     for (y = 0; y < scaleh; y++)
     {
-	byte*	src = blitbuf + (y * SCREENHEIGHT / scaleh) * SCREENWIDTH;
-	int*	xm  = scalexmap;
-	ULONG	x;
+	int	row = scaleymap[y];
+	byte*	src;
 
-	for (x = 0; x < scalew; x++)
-	    dst[x] = src[xm[x]];
+	if (row == lastrow)
+	{
+	    memcpy (dst, dst - scalepitch, scalew);
+	    dst += scalepitch;
+	    continue;
+	}
+
+	lastrow = row;
+	src = blitbuf + row * SCREENWIDTH;
+
+	if (scalew == SCREENWIDTH)
+	{
+	    // No horizontal scaling wanted.  Happens when the window has been
+	    // dragged back to 320 wide after the buffer already existed.
+	    memcpy (dst, src, SCREENWIDTH);
+	}
+	else if (scalew == SCREENWIDTH * 2)
+	{
+	    unsigned short*	d = (unsigned short *) dst;
+	    ULONG		x;
+
+	    for (x = 0; x < SCREENWIDTH; x++)
+	    {
+		unsigned	b = src[x];
+
+		d[x] = (unsigned short)(b | (b << 8));
+	    }
+	}
+	else
+	{
+	    int*	xm = scalexmap;
+	    ULONG	x;
+
+	    for (x = 0; x < scalew; x++)
+		dst[x] = src[xm[x]];
+	}
 
 	dst += scalepitch;
     }
@@ -1788,6 +1867,11 @@ void I_ShutdownGraphics (void)
 	{
 	    free (scalexmap);
 	    scalexmap = NULL;
+	}
+	if (scaleymap)
+	{
+	    free (scaleymap);
+	    scaleymap = NULL;
 	}
 	scalepitch = scalerows = scalew = scaleh = 0;
 	swScale = false;

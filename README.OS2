@@ -206,9 +206,23 @@ How it works
   larger size has been asked for the buffer stays in use, rather than handing
   the source back and forth every time the window crosses 320.
 
+  The scaling loop is written for the two cases that happen rather than the
+  general one.  Vertical nearest neighbour repeats source rows -- 480 rows
+  drawn from 200 means two or three of each -- so a row identical to the one
+  above it is copied with memcpy rather than built again, and memcpy is a
+  rep movsd.  A window exactly twice as wide as the picture, which is what
+  the 640 option asks for, needs no column map at all: each source pixel
+  becomes a pair, built in a register and stored in one go.  Together those
+  are worth about three times the plain per-pixel loop, verified byte for
+  byte against it at sixteen window sizes.  Rows are padded to a multiple of
+  four bytes so neither shortcut ever straddles an alignment boundary; the
+  padding is never blitted, because ulSrcWidth is the width in use and not
+  the pitch.
+
   -divestretch goes back to letting DIVE scale, for a driver that does it
   properly and a machine that would rather spend the memory bandwidth
   elsewhere.
+
 **Sound.**  MMPM/2 DART, at 11025 Hz 16-bit stereo, which is what DOOM's
   mixer produces.
 
@@ -491,18 +505,34 @@ in the order I would check them:
      unaffected.
 
 
-Adding an icon
---------------
+The icon
+--------
 
-There is none, and the window gets the default program icon.
-
-To add one, put a genuine OS/2 icon -- saved by OS/2's own ICONEDIT, or taken
-from \OS2\BITMAP -- in RES\DOOM.OS2.  MKOS2.CMD compiles and binds RES\DOOM.RC
-when that file is present and skips the step silently when it is not.
+RES\DOOM.ICO is an ordinary Windows icon, and it is converted at build time.
 
 Do not feed wrc a Windows .ICO for an OS/2 target.  It accepts it, exits 0,
-and embeds it verbatim; PM then cannot load it, and you get no icon and no
-error anywhere to say why.
+and embeds the ICONDIR and Windows BITMAPINFOHEADER verbatim as an RT_POINTER;
+PM then cannot load it, and you get no icon and no error anywhere to say why.
+
+So MKOS2.CMD builds TOOLS\ICO2OS2.C for the build machine -- it is a host
+program, compiled -bt=nt like anything else that runs on Windows -- and runs
+it over RES\DOOM.ICO to produce BUILD\DOOM.OS2, which is what RES\DOOM.RC
+compiles in.  The pixels are unchanged; only the wrapping around them differs.
+
+What PM wants is a bitmap array holding one device form, and that form holds
+TWO version-1 'CI' bitmaps: the mono AND/XOR mask first at double height, then
+the colour bitmap, each followed immediately by its own colour table.  Three
+details are easy to get wrong and all three are fatal rather than merely ugly
+-- a colour icon is not two array entries, the version-1 structures are the
+ones IBM's own icons use rather than the documented "2" long forms, and a
+version-1 colour table is 3-byte RGB, so a Windows RGBQUAD's padding byte has
+to be dropped.  The layout in ICO2OS2.C was established by parsing a real Warp
+3 icon field by field, not from the published description; the comment at the
+top of the file records it.
+
+The whole step is optional and skips itself.  With no RES\DOOM.ICO the build
+prints a line saying so and links exactly as it otherwise would.  A genuine
+OS/2 icon can be used instead by dropping it into BUILD\ as DOOM.OS2 by hand.
 
 The icon is loaded with WinLoadPointer and applied with WM_SETICON rather
 than asked for through FCF_ICON in the frame flags.  That is deliberate: PM
