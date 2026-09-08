@@ -61,7 +61,12 @@ DOOM.EXE : $(OBJS)
 	  option quiet option map option stack=$(STACK) &
 	  option description 'DOOM for OS/2' &
 	  file { $(OBJS) }
-	@if exist $(SRC)\RES\DOOM.OS2 wrc -bt=os2 -r -q -i=$(SRC)\RES $(SRC)\RES\DOOM.RC -fo=DOOM.res
+#  The icon, if there is one.  ICO2OS2 is a HOST tool -- built -bt=nt, run
+#  here -- because wrc will not convert a Windows .ICO for OS/2: it embeds it
+#  unchanged and PM silently refuses the resource.  See MKOS2.CMD.
+	@if exist $(SRC)\RES\DOOM.ICO wcl386 -bt=nt -q -zq $(SRC)\TOOLS\ICO2OS2.C -fe=ico2os2.exe
+	@if exist ico2os2.exe .\ico2os2.exe $(SRC)\RES\DOOM.ICO DOOM.OS2
+	@if exist DOOM.OS2 wrc -bt=os2 -r -q -i=. -i=$(SRC)\RES $(SRC)\RES\DOOM.RC -fo=DOOM.res
 	@if exist DOOM.res wrc -bt=os2 -q DOOM.res DOOM.EXE
 
 .c : $(SRC)
@@ -72,6 +77,8 @@ DOOM.EXE : $(OBJS)
 clean : .SYMBOLIC
 	@if exist *.obj del *.obj
 	@if exist *.res del *.res
+	@if exist DOOM.OS2 del DOOM.OS2
+	@if exist ico2os2.exe del ico2os2.exe
 	@if exist DOOM.map del DOOM.map
 	@if exist DOOM.EXE del DOOM.EXE
 

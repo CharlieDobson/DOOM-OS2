@@ -12,9 +12,10 @@ rem
 rem  Steps:
 rem    1. wcc386  -bt=os2   -> one .OBJ per source
 rem    2. wlink   sys os2v2_pm -> DOOM.EXE  (LX, PM, 1 MB stack)
+rem    3. ico2os2 + wrc     -> the window icon, bound into DOOM.EXE
 rem
-rem  There are no resources to bind: the port creates its window entirely in
-rem  code and has no icon of its own.  See README.OS2 for how to add one.
+rem  Step 3 is optional and self-skipping: no RES\DOOM.ICO, no icon, and the
+rem  build still succeeds.
 rem ==========================================================================
 rem  Watcom location.  An existing %WATCOM% is honoured -- a normal Open
 rem  Watcom install sets it -- so the fallback below only matters when the
@@ -215,17 +216,43 @@ if errorlevel 1 goto failed
 if not exist DOOM.EXE goto failed
 
 rem --------------------------------------------------------------------------
-rem  3. resources (optional)
+rem  3. the icon (optional)
 rem
-rem     Only if there is an icon to bind.  RES\DOOM.OS2 must be a genuine
-rem     OS/2 icon; see the comment at the top of RES\DOOM.RC for why a
-rem     Windows .ICO will not do, and why nothing breaks if this step is
-rem     skipped entirely.
+rem     RES\DOOM.ICO is a Windows icon, and a Windows icon is not something
+rem     wrc will convert.  It accepts one for an OS/2 target, exits 0, and
+rem     embeds the ICONDIR and Windows BITMAPINFOHEADER verbatim as an
+rem     RT_POINTER; PM then refuses the resource and there is no error
+rem     anywhere to say so.  TOOLS\ICO2OS2.C rewrites the same pixels in the
+rem     format PM actually reads -- see the comment at the top of it, which
+rem     records the layout that was worked out by parsing a real Warp 3 icon
+rem     rather than from the published description of one.
+rem
+rem     The tool is a HOST program: it runs here, on the build machine, so it
+rem     is built -bt=nt like any other Windows executable.  Only its output
+rem     goes to OS/2.
+rem
+rem     None of this is required.  With no RES\DOOM.ICO the step is skipped,
+rem     DOOM.EXE links exactly as before, and I_VIDEO.C loads the icon with
+rem     WinLoadPointer rather than through FCF_ICON -- so a missing one costs
+rem     the default program icon and nothing else.
 rem --------------------------------------------------------------------------
-if not exist ..\RES\DOOM.OS2 goto noresources
+if not exist ..\RES\DOOM.ICO goto noresources
 
+echo Converting the icon...
+wcl386 -bt=nt -q -zq ..\TOOLS\ICO2OS2.C -fe=ico2os2.exe
+if errorlevel 1 goto failed
+if not exist ico2os2.exe goto failed
+
+rem  ".\" spelled out: a shell with NoDefaultCurrentDirectoryInExePath set
+rem  will not find a program in the directory it is standing in.
+.\ico2os2.exe ..\RES\DOOM.ICO DOOM.OS2
+if errorlevel 1 goto failed
+if not exist DOOM.OS2 goto failed
+
+rem  -i=. so the RC's ICON statement finds the DOOM.OS2 just generated here,
+rem  rather than a stale one that might be sitting in RES.
 echo Compiling and binding resources...
-wrc -bt=os2 -r -q -i=..\RES -i=%WATCOM%\H\OS2 ..\RES\DOOM.RC -fo=DOOM.res
+wrc -bt=os2 -r -q -i=. -i=..\RES -i=%WATCOM%\H\OS2 ..\RES\DOOM.RC -fo=DOOM.res
 if errorlevel 1 goto failed
 
 wrc -bt=os2 -q DOOM.res DOOM.EXE
@@ -233,7 +260,7 @@ if errorlevel 1 goto failed
 goto haveresources
 
 :noresources
-echo No RES\DOOM.OS2 icon - building without one (the default icon is used).
+echo No RES\DOOM.ICO - building without an icon (the default one is used).
 
 :haveresources
 
