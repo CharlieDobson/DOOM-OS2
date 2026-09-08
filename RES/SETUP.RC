@@ -1,0 +1,26 @@
+/* Resources for OS2SETUP.EXE.
+ *
+ * There is exactly one, and it is optional: the window icon.  The layout of
+ * the settings window is built in code, not from a dialog template, so there
+ * is nothing else here.
+ *
+ * SETUP.OS2 is NOT in the source tree.  It is generated into BUILD\ by
+ * MKSETUP.CMD, which runs TOOLS\ICO2OS2.C over RES\SETUP.ICO to rewrite the
+ * Windows icon in the format PM reads.
+ *
+ * That conversion cannot be skipped by pointing the statement below straight
+ * at the .ICO.  wrc accepts a Windows icon for an OS/2 target, exits 0, and
+ * embeds it verbatim as an RT_POINTER; PM then cannot load it, and you get no
+ * icon and no error anywhere to say why.  What PM wants is a bitmap array of
+ * two version-1 'CI' bitmaps -- mono mask first, then colour -- which is what
+ * ICO2OS2 emits.  See the comment at the top of that file.
+ *
+ * This whole file is skipped by MKSETUP.CMD when RES\SETUP.ICO is not
+ * present, and OS2SETUP.C loads the icon with WinLoadPointer rather than
+ * asking for it through FCF_ICON, so a missing or malformed icon costs
+ * nothing worse than the default program icon.
+ */
+
+#define ID_SETUP_ICON	1
+
+ICON ID_SETUP_ICON	"SETUP.OS2"

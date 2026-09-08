@@ -505,10 +505,13 @@ in the order I would check them:
      unaffected.
 
 
-The icon
---------
+The icons
+---------
 
-RES\DOOM.ICO is an ordinary Windows icon, and it is converted at build time.
+RES\DOOM.ICO and RES\SETUP.ICO are ordinary Windows icons, and both are
+converted at build time -- the first by MKOS2.CMD for the game, the second by
+MKSETUP.CMD for OS2SETUP.EXE.  What follows describes the game's; the settings
+program's works the same way through RES\SETUP.RC and BUILD\SETUP.OS2.
 
 Do not feed wrc a Windows .ICO for an OS/2 target.  It accepts it, exits 0,
 and embeds the ICONDIR and Windows BITMAPINFOHEADER verbatim as an RT_POINTER;
@@ -533,6 +536,11 @@ top of the file records it.
 The whole step is optional and skips itself.  With no RES\DOOM.ICO the build
 prints a line saying so and links exactly as it otherwise would.  A genuine
 OS/2 icon can be used instead by dropping it into BUILD\ as DOOM.OS2 by hand.
+
+ICO2OS2 takes the largest image in the .ICO and emits it as a single device
+form, so a multi-form Windows icon loses its smaller sizes and PM scales the
+32x32 down when it wants one.  Carrying more than one form would mean chaining
+a second bitmap array entry through offNext.
 
 The icon is loaded with WinLoadPointer and applied with WM_SETICON rather
 than asked for through FCF_ICON in the frame flags.  That is deliberate: PM

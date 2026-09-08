@@ -68,6 +68,10 @@
 #define IDB_SAVE	108
 #define IDB_CANCEL	109
 
+// Resource id of the window icon.  Only meaningful if RES\SETUP.RC was
+// compiled and bound into the executable -- see MKSETUP.CMD.
+#define ID_SETUP_ICON	1
+
 // DOOM's own key codes, from DOOMDEF.H.  Only the ones bindable to an action.
 #define KEY_RIGHTARROW	0xae
 #define KEY_LEFTARROW	0xac
@@ -824,6 +828,24 @@ int main (int argc, char** argv)
 	WinDestroyMsgQueue (hmq);
 	WinTerminate (hab);
 	return 1;
+    }
+
+    //
+    // The window icon, if this OS2SETUP.EXE was built with one.
+    //
+    // Loaded and applied by hand rather than asked for with FCF_ICON in the
+    // frame flags, exactly as the game does it.  PM validates an icon
+    // resource strictly, and if it does not like it, FCF_ICON fails -- and
+    // that fails the whole WinCreateStdWindow, with
+    // PMERR_INVALID_RESOURCE_FORMAT and no window at all.  Done this way the
+    // worst a bad or missing icon can do is leave the default one in place,
+    // which is what happens when no resource was bound in.
+    //
+    {
+	HPOINTER	hptr = WinLoadPointer (HWND_DESKTOP, NULLHANDLE,
+					       ID_SETUP_ICON);
+	if (hptr != NULLHANDLE)
+	    WinSendMsg (hwndFrame, WM_SETICON, MPFROMLONG(hptr), (MPARAM)0);
     }
 
     //

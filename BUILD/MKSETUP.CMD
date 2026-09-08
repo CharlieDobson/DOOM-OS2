@@ -52,7 +52,51 @@ wlink >nul: 2>&1 ^
 if errorlevel 1 goto failed
 if not exist OS2SETUP.EXE goto failed
 
+rem --------------------------------------------------------------------------
+rem  The icon (optional).
+rem
+rem  RES\SETUP.ICO is a Windows icon, and wrc will not convert one.  It accepts
+rem  it for an OS/2 target, exits 0, and embeds the ICONDIR and Windows
+rem  BITMAPINFOHEADER verbatim as an RT_POINTER; PM then refuses the resource
+rem  and there is no error anywhere to say so.  TOOLS\ICO2OS2.C rewrites the
+rem  same pixels in the format PM actually reads -- the same host tool
+rem  MKOS2.CMD uses for the game's icon, and the comment at the top of it
+rem  records the layout it emits and why.
+rem
+rem  Optional and self-skipping: no RES\SETUP.ICO, no icon, and OS2SETUP.EXE
+rem  is exactly what it was before.  OS2SETUP.C loads the icon with
+rem  WinLoadPointer rather than through FCF_ICON, so a missing or malformed
+rem  one costs the default program icon and nothing else.
+rem --------------------------------------------------------------------------
+if not exist ..\RES\SETUP.ICO goto noresources
+
+echo Converting the icon...
+wcl386 -bt=nt -q -zq ..\TOOLS\ICO2OS2.C -fe=ico2os2.exe
+if errorlevel 1 goto failed
+if not exist ico2os2.exe goto failed
+
+rem  ".\" spelled out: a shell with NoDefaultCurrentDirectoryInExePath set
+rem  will not find a program in the directory it is standing in.
+.\ico2os2.exe ..\RES\SETUP.ICO SETUP.OS2
+if errorlevel 1 goto failed
+if not exist SETUP.OS2 goto failed
+
+rem  -i=. so the RC's ICON statement finds the SETUP.OS2 just generated here.
+echo Compiling and binding resources...
+wrc -bt=os2 -r -q -i=. -i=..\RES -i=%WATCOM%\H\OS2 ..\RES\SETUP.RC -fo=SETUP.res
+if errorlevel 1 goto failed
+
+wrc -bt=os2 -q SETUP.res OS2SETUP.EXE
+if errorlevel 1 goto failed
+goto haveresources
+
+:noresources
+echo No RES\SETUP.ICO - building without an icon (the default one is used).
+
+:haveresources
+
 del os2setup.obj >nul 2>&1
+del ico2os2.obj >nul 2>&1
 
 echo.
 echo Built BUILD\OS2SETUP.EXE  (OS/2 2.x / Warp, 32-bit Presentation Manager).
